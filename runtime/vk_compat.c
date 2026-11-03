@@ -7,20 +7,22 @@
 VkCompat vk_cp;
 
 int vk_compat_load(VkDevice dev, int core13, int maintenance4) {
+    if (core13) {   // the runtime's calls on a 1.3 device are the loader's, as they were before the 1.2 path
+        vk_compat_core(&vk_cp);
+        return 1;
+    }
     int missing = 0;
 #define VK_COMPAT_LOAD(name, sfx)                                                                                     \
     do {                                                                                                              \
-        const char *n = core13 ? "vk" #name : "vk" #name #sfx;                                                        \
+        const char *n = "vk" #name #sfx;                                                                              \
         vk_cp.name = (PFN_vk##name)vkGetDeviceProcAddr(dev, n);                                                       \
         if (!vk_cp.name) { rt_log("vk: %s is missing", n); missing++; }                                               \
     } while (0);
     VK_COMPAT_FNS(VK_COMPAT_LOAD)
 #undef VK_COMPAT_LOAD
     vk_cp.GetDeviceImageMemoryRequirements =
-        core13 || maintenance4
-            ? (PFN_vkGetDeviceImageMemoryRequirements)vkGetDeviceProcAddr(
-                  dev, core13 ? "vkGetDeviceImageMemoryRequirements" : "vkGetDeviceImageMemoryRequirementsKHR")
-            : NULL;
+        maintenance4 ? (PFN_vkGetDeviceImageMemoryRequirements)vkGetDeviceProcAddr(dev, "vkGetDeviceImageMemoryRequirementsKHR")
+                     : NULL;
     return missing == 0;
 }
 

@@ -25,15 +25,22 @@ typedef struct VkCompat {
 } VkCompat;
 extern VkCompat vk_cp;
 
-// Fills vk_cp for dev: core13 selects the core names, otherwise the extension ones; maintenance4 says that
-// VK_KHR_maintenance4 is enabled on a 1.2 device. 0 (logged) when a function is missing.
+// Fills vk_cp for dev. On a 1.3 device (core13) the table holds the loader's own entry points, the ones the runtime
+// called before the 1.2 path existed (vk_compat_core in vk_compat_core.c); below 1.3 it holds the extension functions,
+// and maintenance4 says that VK_KHR_maintenance4 is enabled. 0 (logged) when a function is missing.
 int vk_compat_load(VkDevice dev, int core13, int maintenance4);
 
 // vkGetDeviceImageMemoryRequirements, or on a device without it a throwaway image made from the same create info.
 void vk_compat_image_requirements(VkDevice dev, const VkDeviceImageMemoryRequirements *info, VkMemoryRequirements2 *out);
 
+// vk_compat_core.c: the loader's functions, in a file that includes nothing of the runtime so that no macro below
+// (nor the rc_* ones of vk_rec.h) renames them.
+void vk_compat_core(VkCompat *t);
+
+#ifndef VK_COMPAT_CORE
 #define vkQueueSubmit2 vk_cp.QueueSubmit2
 #define vkGetDeviceImageMemoryRequirements vk_compat_image_requirements
+#endif
 
 // The recorder (vk_rec.c) makes the real vkCmd* calls; every other file reaches them through the rc_* macros of vk_rec.h.
 #ifdef VK_REC_IMPL

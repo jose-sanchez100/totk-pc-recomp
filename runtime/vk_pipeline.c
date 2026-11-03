@@ -230,24 +230,31 @@ static int ensure_init(void) {
     VkPhysicalDeviceExtendedDynamicState3FeaturesEXT e3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
     VkPhysicalDeviceProvokingVertexFeaturesEXT pvf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT,
                                                       .pNext = c->has_eds3 ? &e3 : NULL};
-    // Subgroup size control by its own structures: the 1.3 aggregate ones do not exist on a 1.2 device (vk_compat.h).
-    VkPhysicalDeviceSubgroupSizeControlFeaturesEXT v13 = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT,
-        .pNext = c->has_provoking_vertex ? (void *)&pvf : (c->has_eds3 ? (void *)&e3 : NULL)};
+    // Subgroup size control: the Vulkan 1.3 structures on a 1.3 device; below it the structures of
+    // VK_EXT_subgroup_size_control, which the device may lack (vk_compat.h).
+    void *feat_tail = c->has_provoking_vertex ? (void *)&pvf : (c->has_eds3 ? (void *)&e3 : NULL);
+    VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = feat_tail};
+    VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sgf = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT, .pNext = feat_tail};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                    .pNext = c->has_subgroup_size_control ? (void *)&v13 : v13.pNext};
+                                    .pNext = c->core13 ? (void *)&v13 : c->has_subgroup_size_control ? (void *)&sgf : feat_tail};
     vkGetPhysicalDeviceFeatures2(c->phys, &f2);
     P.pv_last = c->has_provoking_vertex && pvf.provokingVertexLast;
     if (!P.pv_last) rt_log("vk_pipeline: provokingVertexLast unavailable: flat outputs come from the first vertex (NVN: last)");
     // Maxwell warps have 32 lanes; the translator assumes it (maxwell.md 3.4). Pin 32 where the driver allows it.
-    if (c->has_subgroup_size_control && v13.subgroupSizeControl) {
-        VkPhysicalDeviceSubgroupSizeControlPropertiesEXT p13 = {
+    if (c->core13 ? v13.subgroupSizeControl : sgf.subgroupSizeControl) {
+        VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+        VkPhysicalDeviceSubgroupSizeControlPropertiesEXT sgp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES_EXT};
-        VkPhysicalDeviceProperties2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+        VkPhysicalDeviceProperties2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                          .pNext = c->core13 ? (void *)&p13 : (void *)&sgp};
         vkGetPhysicalDeviceProperties2(c->phys, &q2);
+        const uint32_t sg_min = c->core13 ? p13.minSubgroupSize : sgp.minSubgroupSize;
+        const uint32_t sg_max = c->core13 ? p13.maxSubgroupSize : sgp.maxSubgroupSize;
+        const VkShaderStageFlags sg_stages = c->core13 ? p13.requiredSubgroupSizeStages : sgp.requiredSubgroupSizeStages;
         P.sg32_stages = vk_caps.sg_pin_stages;   // vk_caps.c: 32 unless TOTK_VK_SUBGROUP; 0 without the pin
-        rt_log("vk_pipeline: subgroup size %u-%u, requiredSubgroupSizeStages %#x, pinning %u on %#x", p13.minSubgroupSize,
-               p13.maxSubgroupSize, (unsigned)p13.requiredSubgroupSizeStages, vk_caps.sg_size, (unsigned)P.sg32_stages);
+        rt_log("vk_pipeline: subgroup size %u-%u, requiredSubgroupSizeStages %#x, pinning %u on %#x", sg_min, sg_max,
+               (unsigned)sg_stages, vk_caps.sg_size, (unsigned)P.sg32_stages);
     }
     P.f_logic_op = f2.features.logicOp;
     P.f_depth_clamp = f2.features.depthClamp;

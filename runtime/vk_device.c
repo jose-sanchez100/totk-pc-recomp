@@ -14,6 +14,7 @@
 
 static VkCtx g_vk;
 static int g_ready;
+static uint32_t g_inst_api = VK_API_VERSION_1_3;   // the instance's apiVersion; TOTK_VK_API=1.2 lowers it (create_instance)
 static PlatMutex g_lock = PLAT_MUTEX_INIT;
 
 // ---- GPU address map for device faults
@@ -143,14 +144,18 @@ static int create_instance(void) {
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
     vk_dlaa_instance_exts(ext, &n_ext, 12);
+    // TOTK_VK_API=1.2 makes a 1.3 GPU run the 1.2 path (the extensions of vk_compat.h instead of the core commands), and
+    // the validation layer then reports any 1.3 call the runtime makes without them.
+    const char *want_api = cfg_get("TOTK_VK_API");
+    if (want_api && !strcmp(want_api, "1.2")) g_inst_api = VK_API_VERSION_1_2;
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
-                             .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
+                             .pEngineName = "TotK Recomp", .apiVersion = g_inst_api};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
                                .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
     rdoc_init();
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.instance);
-    if (r != VK_SUCCESS) { rt_log("vk: vkCreateInstance failed (%d); is a Vulkan 1.3 driver installed?", (int)r); return 0; }
+    if (r != VK_SUCCESS) { rt_log("vk: vkCreateInstance failed (%d); is a Vulkan 1.2 driver installed?", (int)r); return 0; }
     g_vk.validation = validate;
     if (validate || ab_want) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
@@ -172,8 +177,13 @@ static const char *const k_required_ext[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
     VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
 
+// What a device below Vulkan 1.3 needs on top (the commands 1.3 made core, vk_compat.h).
+static const char *const k_required_ext_12[] = {
+    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+    VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
+
 // Name of the first missing required extension, or NULL.
-static const char *missing_required(VkPhysicalDevice pd) {
+static const char *missing_required(VkPhysicalDevice pd, int core13) {
     uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(pd, NULL, &n, NULL);
     VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
@@ -181,6 +191,8 @@ static const char *missing_required(VkPhysicalDevice pd) {
     const char *miss = NULL;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext && !miss; i++)
         if (!has_ext(e, n, k_required_ext[i])) miss = k_required_ext[i];
+    for (size_t i = 0; !core13 && i < sizeof k_required_ext_12 / sizeof *k_required_ext_12 && !miss; i++)
+        if (!has_ext(e, n, k_required_ext_12[i])) miss = k_required_ext_12[i];
     free(e);
     return miss;
 }
@@ -200,7 +212,7 @@ static int name_has(const char *s, const char *sub) {
     return 0;
 }
 
-// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; TOTK_GPU_INDEX (index) or
+// First discrete GPU with Vulkan 1.2, the required extensions and a graphics+present queue; TOTK_GPU_INDEX (index) or
 // TOTK_GPU_NAME (case-insensitive part of the name) overrides.
 static int pick_device(void) {
     uint32_t n = 0;
@@ -212,6 +224,7 @@ static int pick_device(void) {
     int want = e && *e ? atoi(e) : -1;
     const char *name = cfg_get("TOTK_GPU_NAME");
     int best = -1, best_score = -1;
+    uint32_t best_api = 0;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
@@ -219,8 +232,9 @@ static int pick_device(void) {
                VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (want >= 0 && (int)i != want) continue;
         if (name && *name && !name_has(p.deviceName, name)) continue;
-        if (p.apiVersion < VK_API_VERSION_1_3) { rt_log("vk: gpu %u skipped: Vulkan below 1.3", i); continue; }
-        const char *miss = missing_required(pd[i]);
+        uint32_t api = p.apiVersion < g_inst_api ? p.apiVersion : g_inst_api;   // what the device offers to this instance
+        if (api < VK_API_VERSION_1_2) { rt_log("vk: gpu %u skipped: Vulkan below 1.2", i); continue; }
+        const char *miss = missing_required(pd[i], api >= VK_API_VERSION_1_3);
         if (miss) { rt_log("vk: gpu %u skipped: missing extension %s", i, miss); continue; }
         uint32_t nq = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
@@ -231,17 +245,19 @@ static int pick_device(void) {
         if (fam == UINT32_MAX) { rt_log("vk: gpu %u skipped: no graphics+compute+present queue family", i); continue; }
         int score = (int)i == want ? 100 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3
                   : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
-        if (score > best_score) { best_score = score; best = (int)i; }
+        if (score > best_score) { best_score = score; best = (int)i; best_api = api; }
     }
     if (best < 0) {
         if (want >= 0) rt_log("vk: TOTK_GPU_INDEX=%d is not usable (see above)", want);
         else if (name && *name) rt_log("vk: no usable gpu matches TOTK_GPU_NAME=%s (see above)", name);
-        else rt_log("vk: no device with Vulkan 1.3 and the required extensions (see above)");
+        else rt_log("vk: no device with Vulkan 1.2 and the required extensions (see above)");
         free(pd);
         return 0;
     }
     g_vk.phys = pd[best];
     g_vk.device_index = best;
+    g_vk.api_version = best_api;
+    g_vk.core13 = best_api >= VK_API_VERSION_1_3;
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &g_vk.mem_props);
@@ -257,7 +273,8 @@ static int pick_device(void) {
             break;
         }
     free(qp);
-    rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
+    rt_log("vk: using gpu %d: %s, running as Vulkan %u.%u%s", best, g_vk.props.deviceName, VK_API_VERSION_MAJOR(best_api),
+           VK_API_VERSION_MINOR(best_api), g_vk.core13 ? "" : " (the 1.3 commands from extensions)");
     vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
     return 1;
 }
@@ -266,7 +283,12 @@ typedef struct {
     VkPhysicalDeviceFeatures2 f2;
     VkPhysicalDeviceVulkan11Features f11;
     VkPhysicalDeviceVulkan12Features f12;
-    VkPhysicalDeviceVulkan13Features f13;
+    VkPhysicalDeviceVulkan13Features f13;                       // a 1.3 device; below it the four that follow
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dr;
+    VkPhysicalDeviceSynchronization2FeaturesKHR s2;
+    VkPhysicalDeviceMaintenance4FeaturesKHR m4;
+    VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sgc;
+    VkPhysicalDevice4444FormatsFeaturesEXT f4444;
     VkPhysicalDeviceDepthClipControlFeaturesEXT clip;
     VkPhysicalDeviceCustomBorderColorFeaturesEXT cbc;
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds;
@@ -293,6 +315,7 @@ static int create_device(void) {
     const char *ext[48];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
+    const int core13 = g_vk.core13;
 
     FeatureChain *c = calloc(1, sizeof *c);
     void **tail = &c->f2.pNext;
@@ -300,7 +323,35 @@ static int create_device(void) {
     c->f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     CHAIN(f11, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES);
     CHAIN(f12, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
-    CHAIN(f13, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
+    if (core13) {
+        CHAIN(f13, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
+        g_vk.has_maintenance4 = g_vk.has_subgroup_size_control = g_vk.has_format_feature_flags2 = 1;
+    } else {
+        // Below 1.3 the same features come as extensions (vk_compat.h); the extended dynamic state ones are chained with
+        // the optional extensions below, where they are always present, since missing_required asked for them.
+        ext[n_ext++] = VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME;
+        ext[n_ext++] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
+        CHAIN(dr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR);
+        CHAIN(s2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR);
+        if (has_ext(ep, ne, VK_KHR_MAINTENANCE_4_EXTENSION_NAME)) {
+            g_vk.has_maintenance4 = 1;
+            ext[n_ext++] = VK_KHR_MAINTENANCE_4_EXTENSION_NAME;
+            CHAIN(m4, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES_KHR);
+        }
+        if (has_ext(ep, ne, VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME)) {
+            g_vk.has_subgroup_size_control = 1;
+            ext[n_ext++] = VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME;
+            CHAIN(sgc, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT);
+        }
+        if (has_ext(ep, ne, VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME)) {
+            g_vk.has_format_feature_flags2 = 1;
+            ext[n_ext++] = VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME;
+        }
+        if (has_ext(ep, ne, VK_EXT_4444_FORMATS_EXTENSION_NAME)) {   // vk_formats.c RGBA4 (A4B4G4R4 is core in 1.3)
+            ext[n_ext++] = VK_EXT_4444_FORMATS_EXTENSION_NAME;
+            CHAIN(f4444, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT);
+        }
+    }
     CHAIN(clip, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT);
 #define OPTIONAL_EXT(flag, name, member, stype) do { \
         if (has_ext(ep, ne, name)) { g_vk.flag = 1; ext[n_ext++] = name; CHAIN(member, stype); } } while (0)
@@ -376,8 +427,10 @@ static int create_device(void) {
     const VkPhysicalDeviceFeatures *h = &c->f2.features;
     const char *miss = NULL;
     if (!c->f12.timelineSemaphore) miss = "timelineSemaphore";
-    else if (!c->f13.dynamicRendering) miss = "dynamicRendering";
-    else if (!c->f13.synchronization2) miss = "synchronization2";
+    else if (!(core13 ? c->f13.dynamicRendering : c->dr.dynamicRendering)) miss = "dynamicRendering";
+    else if (!(core13 ? c->f13.synchronization2 : c->s2.synchronization2)) miss = "synchronization2";
+    else if (!core13 && !c->eds.extendedDynamicState) miss = "extendedDynamicState";
+    else if (!core13 && !c->eds2.extendedDynamicState2) miss = "extendedDynamicState2";
     else if (!h->shaderStorageImageWriteWithoutFormat) miss = "shaderStorageImageWriteWithoutFormat";
     else if (!c->clip.depthClipControl) miss = "depthClipControl";
     else if (!h->shaderInt64) miss = "shaderInt64";
@@ -391,6 +444,7 @@ static int create_device(void) {
            has_abr && c->abr.reportAddressBinding ? "on (VK_EXT_device_address_binding_report; TOTK_ADDR_REPORT=0 turns it off)"
            : !ab_want ? "off (TOTK_ADDR_REPORT=0 or no VK_EXT_debug_utils)"
                       : "unavailable (no VK_EXT_device_address_binding_report)");
+    if (!core13 && !c->m4.maintenance4) g_vk.has_maintenance4 = 0;   // the extension alone does not enable the query
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
@@ -419,6 +473,10 @@ static int create_device(void) {
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
+    if (!vk_compat_load(g_vk.device, core13, g_vk.has_maintenance4 && !core13)) {
+        rt_log("vk: %s: a function of the Vulkan 1.3 set is missing (see above)", g_vk.props.deviceName);
+        return 0;
+    }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
@@ -436,7 +494,8 @@ static int create_device(void) {
     g_vk.vma_block = (VkDeviceSize)cfg_int("TOTK_VMA_BLOCK_MIB") << 20;
     if (!g_vk.vma_block) g_vk.vma_block = 256ull << 20;   // VMA_DEFAULT_LARGE_HEAP_BLOCK_SIZE
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
-                                 .vulkanApiVersion = VK_API_VERSION_1_3, .preferredLargeHeapBlockSize = g_vk.vma_block,
+                                 .vulkanApiVersion = core13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2,
+                                 .preferredLargeHeapBlockSize = g_vk.vma_block,
                                  .flags = (g_vk.has_buffer_device_address ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0) |
                                           (g_vk.has_memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0),
                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
@@ -600,6 +659,9 @@ int probe_vkdevice(void) {
            c->has_conditional_rendering, c->has_transform_feedback, c->has_provoking_vertex, c->has_robustness2,
            c->has_device_fault, c->has_memory_budget, c->has_buffer_device_address, c->has_fragment_shader_interlock,
            c->has_buffer_marker, c->has_nv_checkpoints, c->validation);
+    printf("probe-vkdevice: runs as Vulkan %u.%u: core13=%d maintenance4=%d subgroup_size_control=%d format_feature_flags2=%d\n",
+           VK_API_VERSION_MAJOR(c->api_version), VK_API_VERSION_MINOR(c->api_version), c->core13, c->has_maintenance4,
+           c->has_subgroup_size_control, c->has_format_feature_flags2);
     vk_shutdown();
     printf("probe-vkdevice: %s (validation errors %ld)\n", g_errors_total ? "FAILED" : "passed", g_errors_total);
     return g_errors_total ? 1 : 0;

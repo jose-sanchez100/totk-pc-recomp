@@ -84,15 +84,21 @@ void vk_caps_init(VkCtx *c) {
     VkPhysicalDeviceLimits *l = &c->props.limits;
     VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceSubgroupProperties sg = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, .pNext = &drv};
-    VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, .pNext = &sg};
+    // The subgroup size control properties and feature by their own structures (core in 1.3, VK_EXT_subgroup_size_control
+    // below it), chained only where the device has them: the 1.3 aggregate structures do not exist on a 1.2 device.
+    VkPhysicalDeviceSubgroupSizeControlPropertiesEXT sgp = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES_EXT, .pNext = &sg};
     VkPhysicalDevicePushDescriptorPropertiesKHR pd = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR,
-                                                      .pNext = &p13};
+                                                      .pNext = c->has_subgroup_size_control ? (void *)&sgp : (void *)&sg};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pd};
     vkGetPhysicalDeviceProperties2(c->phys, &p2);
     VkPhysicalDeviceProvokingVertexFeaturesEXT pvf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
-    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                            .pNext = c->has_provoking_vertex ? &pvf : NULL};
-    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13};
+    VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sgf = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT,
+        .pNext = c->has_provoking_vertex ? &pvf : NULL};
+    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                    .pNext = c->has_subgroup_size_control ? (void *)&sgf : (void *)&pvf};
+    if (!c->has_subgroup_size_control && !c->has_provoking_vertex) f2.pNext = NULL;
     vkGetPhysicalDeviceFeatures2(c->phys, &f2);
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(c->phys, NULL, &ne, NULL);
@@ -104,10 +110,10 @@ void vk_caps_init(VkCtx *c) {
     vk_caps.sbuf_align = l->minStorageBufferOffsetAlignment > 4 ? (uint32_t)l->minStorageBufferOffsetAlignment : 0;
 
     uint32_t want = env_u32("TOTK_VK_SUBGROUP", 32);
-    int pin = f13.subgroupSizeControl && cfg_bool("TOTK_VK_SUBGROUP_PIN") && p13.minSubgroupSize <= want &&
-              want <= p13.maxSubgroupSize;
+    int pin = sgf.subgroupSizeControl && cfg_bool("TOTK_VK_SUBGROUP_PIN") && sgp.minSubgroupSize <= want &&
+              want <= sgp.maxSubgroupSize;
     vk_caps.sg_size = want;
-    vk_caps.sg_pin_stages = pin ? p13.requiredSubgroupSizeStages : 0;
+    vk_caps.sg_pin_stages = pin ? sgp.requiredSubgroupSizeStages : 0;
     static const VkShaderStageFlags stage[3] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
     uint32_t told[3];
     for (int i = 0; i < 3; i++) told[i] = vk_caps.sg_pin_stages & stage[i] ? want : sg.subgroupSize;
@@ -130,8 +136,8 @@ void vk_caps_init(VkCtx *c) {
            c->props.deviceName, c->props.vendorID, c->props.deviceID, drv.driverName, drv.driverInfo, (int)drv.driverID, dv,
            c->props.driverVersion, VK_API_VERSION_MAJOR(v), VK_API_VERSION_MINOR(v), VK_API_VERSION_PATCH(v));
     rt_log("vk caps: subgroup size %u, stages %#x, ops %#x; size control %d (%u-%u, required stages %#x)", sg.subgroupSize,
-           (unsigned)sg.supportedStages, (unsigned)sg.supportedOperations, (int)f13.subgroupSizeControl, p13.minSubgroupSize,
-           p13.maxSubgroupSize, (unsigned)p13.requiredSubgroupSizeStages);
+           (unsigned)sg.supportedStages, (unsigned)sg.supportedOperations, (int)sgf.subgroupSizeControl, sgp.minSubgroupSize,
+           sgp.maxSubgroupSize, (unsigned)sgp.requiredSubgroupSizeStages);
     rt_log("vk caps: shaderFloat64 %d (enabled %d), storage buffer offset alignment %u (device %u), uniform %llu, "
            "maxPushDescriptors %u, provoking vertex ext %d last %d",
            f64_supported, vk_caps.float64, (unsigned)l->minStorageBufferOffsetAlignment, real_align,

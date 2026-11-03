@@ -438,7 +438,7 @@ class Check(Step):
         devices = host['devices']
         if not devices:
             raise InstallError('check.vulkan_no_device')
-        if not any(tuple(d['api'][:2]) >= (1, 3) for d in devices):
+        if not any(tuple(d['api'][:2]) >= (1, 2) for d in devices):   # 1.2 runs on extensions (runtime/vk_compat.h)
             raise InstallError('check.vulkan_too_old',
                                devices=', '.join(f'{d["name"]} ({d["api"][0]}.{d["api"][1]})' for d in devices))
         kernel = linux_kernel()

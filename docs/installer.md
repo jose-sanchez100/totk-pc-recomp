@@ -52,7 +52,7 @@ loads the saves 1.4.3 wrote.
 1. **Check** before writing anything: an NSZ or XCZ input is unpacked first (below), the files open with the keys, the update is 1.1.0, 1.2.1 or 1.4.3 (by hash, as
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
-   otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
+   otherwise the `v2` one), a Vulkan 1.2 or 1.3 GPU exists. Each failure is one clear message.
 2. **Fonts** with Chinese, Korean or Traditional Chinese text and a firmware folder: extract the Switch system fonts
    from the firmware into `shared-fonts/` (MacNativeGames' `extract_shared_fonts.py`, which verifies every NCA layer
    and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.

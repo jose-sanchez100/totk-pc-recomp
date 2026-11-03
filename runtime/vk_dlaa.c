@@ -190,6 +190,10 @@ static int vtable_ok(void) {
 
 void vk_dlaa_init(void) {
     if (!vk_dlaa_wanted() || !core_load()) return;
+    if (!vk_ctx()->core13) {   // the motion-vector shader (dlaa_mv_spv.h) is SPIR-V 1.6, which a Vulkan 1.2 device rejects
+        rt_log("dlaa: off, it needs a Vulkan 1.3 device (this one runs as 1.2)");
+        return;
+    }
     // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
     if (!plat_exe_dir_wide(wdir, PLAT_PATH_MAX)) {

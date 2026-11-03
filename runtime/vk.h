@@ -9,10 +9,12 @@
 #include "nvn_obj.h"   // pool_t, tex_t, view_t, samp_par, NVNcopyRegion (memory and textures block)
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
 
-// Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
+// Required (device choice fails without them): Vulkan 1.2; VK_KHR_swapchain, VK_KHR_push_descriptor,
 // VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
 // synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
-// independentBlend, geometryShader, textureCompressionBC.
+// independentBlend, geometryShader, textureCompressionBC. A device below 1.3 also needs the extensions that carry what
+// 1.3 made core: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and
+// VK_EXT_extended_dynamic_state2 with their features (vk_compat.h).
 // Optional (flag set in VkCtx when enabled): the has_* members.
 typedef struct VkCtx {
     VkInstance instance;
@@ -30,6 +32,11 @@ typedef struct VkCtx {
     VkDebugUtilsMessengerEXT messenger;
     volatile int32_t validation_errors;        // errors seen by the messenger (TOTK_VK_VALIDATION=1)
     int validation;                         // layer active
+    uint32_t api_version;                   // what the runtime runs at: the lower of the device's and the instance's
+    int core13;                             // api_version >= 1.3; else the 1.3 pieces come from extensions (vk_compat.h)
+    int has_subgroup_size_control,          // the feature is enabled (core in 1.3, else VK_EXT_subgroup_size_control)
+        has_format_feature_flags2,          // VkFormatProperties3 can be asked for (core in 1.3, else VK_KHR_format_feature_flags2)
+        has_maintenance4;                   // vkGetDeviceImageMemoryRequirements is available
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
         has_conditional_rendering, has_transform_feedback, has_provoking_vertex, has_device_fault, has_memory_budget,
         has_robustness2, has_buffer_device_address, has_fragment_shader_interlock, has_buffer_marker,
@@ -674,4 +681,5 @@ void vk_pipeline_shutdown(void);           // waits for background builds, saves
                                            // cache; before vk_shutdown
 int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
 
+#include "vk_compat.h"   // the 1.3 commands through device pointers (vkQueueSubmit2 and others); before vk_rec.h
 #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h

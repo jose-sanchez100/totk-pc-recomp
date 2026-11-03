@@ -1595,8 +1595,8 @@ static VkFormat twin_format(const VkTexImage *img) {
     int i = df == VK_FORMAT_D16_UNORM;
     if (compares[i] < 0) {
         VkFormatProperties3 p3 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
-        VkFormatProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &p3};
-        vkGetPhysicalDeviceFormatProperties2(vk_ctx()->phys, img->format, &p2);
+        VkFormatProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = vk_ctx()->has_format_feature_flags2 ? &p3 : NULL};
+        vkGetPhysicalDeviceFormatProperties2(vk_ctx()->phys, img->format, &p2);   // no flags2 (a 1.2 device without the extension): p3 stays 0, the twin is used
         compares[i] = (p3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT) != 0;
         rt_log("vk_exec: %s under a compare sampler: %s", i ? "R16_UNORM" : "R32_SFLOAT",
                compares[i] ? "compared by the driver" : "sampled through a depth twin in compute passes");

@@ -1,6 +1,6 @@
 # Building from source
 
-Windows 10 or later, an x86-64 CPU with SSE4.2, and a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`. The
+Windows 10 or later, an x86-64 CPU with SSE4.2, and a GPU with Vulkan 1.3 (or 1.2, see below) and `VK_EXT_external_memory_host`. The
 default build targets x86-64-v3 (AVX2/FMA); a CPU without them builds with `--cpu v2` instead and runs slower (see
 "Build"). Allow about 60 GB for the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB
 afterwards.
@@ -200,7 +200,11 @@ Vega 7 of a Ryzen 5 4600G at about 34 fps). Long play sessions and the Steam Dec
 Requirements:
 
 - Linux 6.7 or later: the write watch uses userfaultfd write protection with `PAGEMAP_SCAN`. SteamOS 3.8 qualifies.
-- A Vulkan 1.3 driver with `VK_EXT_external_memory_host` (RADV, NVIDIA).
+- A Vulkan 1.3 driver with `VK_EXT_external_memory_host` (RADV, NVIDIA). A Vulkan 1.2 driver also works when it has
+  `VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, `VK_EXT_extended_dynamic_state` and
+  `VK_EXT_extended_dynamic_state2` with their features: the runtime calls the 1.3 commands through those extensions
+  (`runtime/vk_compat.h`). `TOTK_VK_API=1.2` makes a 1.3 GPU take that path, and with `TOTK_VK_VALIDATION=1` the validation
+  layer then reports any 1.3 command the runtime calls without them.
 - Packages on Arch:
 
   ```sh

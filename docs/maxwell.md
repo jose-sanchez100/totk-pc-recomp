@@ -193,8 +193,10 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
     targets at the fragment's pixel; on the RX 9070 the reads returned stale data as ~16x14 px dark rectangles on the
     ground, and the sage spirit next to Link was not drawn. `vk_exec_draw.c` (feedback loops) now detects such a draw:
     with `VK_EXT_attachment_feedback_loop_layout` and `dynamicRenderingLocalRead` the target moves to the feedback
-    layout and a by-region barrier precedes the draw; without them the pass restarts behind a full barrier
-    (`TOTK_FEEDBACK`). **Fixed.**
+    layout and a by-region barrier precedes the draw. When rendering is emulated over render passes (Vulkan 1.2
+    drivers without dynamic rendering, `vk_compat_rp.c`) the subpass depends on itself and the same by-region barrier
+    goes inside the pass, with the targets in `GENERAL`. Otherwise the pass restarts behind a full barrier, which drains
+    the GPU at every such draw (`TOTK_FEEDBACK=restart` forces it, `=0` turns the barriers off). **Fixed.**
 11. **Border colours.** `vk_texture.c` `make_sampler`: custom colour only with `customBorderColorWithoutFormat`, else transparent
     black; integer formats use the float path. Confirm the RX 9070 reports the feature (grass map needs 0.5).
     **OK if supported.**

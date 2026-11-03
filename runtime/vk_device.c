@@ -462,10 +462,14 @@ static int create_device(void) {
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
+        int restart = e && !strcmp(e, "restart");
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
-                      : layout_ok && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
+                      : restart ? VK_FEEDBACK_RESTART
+                      : layout_ok ? VK_FEEDBACK_LAYOUT
+                      : !g_vk.has_dynamic_rendering ? VK_FEEDBACK_SUBPASS : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
+               : g_vk.feedback == VK_FEEDBACK_SUBPASS ? "subpass self-dependency + by-region barrier"
                : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (TOTK_FEEDBACK=0)",
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }

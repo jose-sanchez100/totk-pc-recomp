@@ -2,7 +2,7 @@
 // a render pass with one subpass and a framebuffer made for the call, and the render pass a graphics pipeline is
 // created against. The runtime's passes keep every target in one layout for the whole pass (GENERAL, or the one the
 // caller names) and barrier before and after it, so the render pass leaves initialLayout = finalLayout = the layout
-// the subpass uses and adds no dependency of its own.
+// the subpass uses. Its one dependency is the subpass on itself, for the barriers of feedback loops (make_pass).
 //
 // Render passes are cached by the formats, the sample count and the load/store operations and layouts, and shared by
 // every pass and pipeline with that key. Two render passes with the same formats and sample count are compatible
@@ -59,8 +59,20 @@ static VkRenderPass make_pass(VkDevice dev, const RpKey *k) {
     }
     VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = k->ncolor,
                                .pColorAttachments = cr, .pDepthStencilAttachment = dr.attachment == VK_ATTACHMENT_UNUSED ? NULL : &dr};
+    // The subpass depends on itself, so a draw that samples a target an earlier draw of the pass wrote can follow a
+    // by-region barrier inside the pass (vk.h VK_FEEDBACK_SUBPASS, vk_exec_draw.c feedback_barrier) instead of a
+    // restart. Every render pass has it: dependencies count for compatibility, and pipelines are made against these.
+    VkSubpassDependency self = {.srcSubpass = 0, .dstSubpass = 0,
+                                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT};
     VkRenderPassCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = n, .pAttachments = ad,
-                                 .subpassCount = 1, .pSubpasses = &sp};
+                                 .subpassCount = 1, .pSubpasses = &sp, .dependencyCount = 1, .pDependencies = &self};
     VkRenderPass rp = VK_NULL_HANDLE;
     if (vkCreateRenderPass(dev, &ci, NULL, &rp) != VK_SUCCESS) rt_fatal("vk: vkCreateRenderPass failed");
     return rp;

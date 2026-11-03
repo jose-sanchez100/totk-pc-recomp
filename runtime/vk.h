@@ -50,14 +50,16 @@ typedef struct VkCtx {
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
-    // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
-    // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
+    // (attachable images get feedback usage, a by-region barrier inside the pass); VK_FEEDBACK_SUBPASS when rendering
+    // is emulated over render passes (vk_compat_rp.c: the subpass depends on itself, so the same by-region barrier is
+    // allowed inside the pass, with the targets in GENERAL); else (or TOTK_FEEDBACK=restart) VK_FEEDBACK_RESTART (the
+    // pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
     int device_index;                       // index in vkEnumeratePhysicalDevices
 } VkCtx;
-enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };
+enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT, VK_FEEDBACK_SUBPASS };
 
 // vk_caps.c: fallbacks for GPUs other than the RX 9070, decided at device creation.
 typedef struct {

@@ -1334,6 +1334,9 @@ int vk_exec_draw_writes(const VkExec *s, int dispatch, uint64_t (*out)[2], int m
 //   pass restarts once with it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT, and from then on its passes attach it in that
 //   layout, its descriptors carry that layout, the draws that sample it use a pipeline with the feedback flag
 //   (VkPipeState.feedback) and a by-region barrier precedes such a draw.
+// - VK_FEEDBACK_SUBPASS (rendering emulated over render passes, vk_compat_rp.c): the targets stay in GENERAL, which
+//   allows a feedback loop in a render pass, and the by-region barrier is allowed inside the pass by the subpass's
+//   dependency on itself. Neither the pipeline nor the descriptors change.
 // - VK_FEEDBACK_RESTART: the pass ends and restarts behind the full barrier (vk_exec_pass_begin).
 static int in_fbl(const VkExec *ex, VkImage img) {
     for (int i = 0; i < ex->nfbl; i++)
@@ -1421,13 +1424,15 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
-// sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
+// sampled attachments that feedback_barrier covers: those in the feedback layout (also the pipeline's feedback flag),
+// or with VK_FEEDBACK_SUBPASS every sampled attachment.
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
     uint32_t d = m & ex->fb_dirty;
     if (d) ex->fr.fb_draws++;
+    if (mode == VK_FEEDBACK_SUBPASS) return m;
     if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
         if (mode == VK_FEEDBACK_LAYOUT)
             for (uint32_t i = 0; i < 9; i++) {
@@ -1448,7 +1453,9 @@ static void feedback_barrier(VkExec *ex) {
                                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                           .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT};
+                           // SHADER_READ, not SHADER_SAMPLED_READ: the emulated render pass's dependency on itself
+                           // (vk_compat_rp.c make_pass) is a Vulkan 1.0 one, and the barrier's scopes must be its subset
+                           .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
                            .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(ex->cb, &di);
@@ -2497,7 +2504,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
-    s.feedback = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0));
+    uint32_t fbp = vk_ctx()->feedback == VK_FEEDBACK_LAYOUT ? fbl : 0;   // the pipeline flag needs the feedback layout
+    s.feedback = (uint8_t)((fbp & 0xff ? 1 : 0) | (fbp & 0x100 ? 2 : 0));
     s.prim = (uint8_t)prim;
     s.depth_minus_w = (uint8_t)(nvn_depth_minus_w() != 0);
     s.y_flip = 1;

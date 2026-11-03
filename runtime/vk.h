@@ -10,11 +10,12 @@
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
 
 // Required (device choice fails without them): Vulkan 1.2; VK_KHR_swapchain, VK_KHR_push_descriptor,
-// VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
-// synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
-// independentBlend, geometryShader, textureCompressionBC. A device below 1.3 also needs the extensions that carry what
-// 1.3 made core: VK_KHR_dynamic_rendering, VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and
-// VK_EXT_extended_dynamic_state2 with their features (vk_compat.h).
+// VK_EXT_external_memory_host; features timelineSemaphore, synchronization2, shaderStorageImageWriteWithoutFormat,
+// shaderInt64, samplerAnisotropy, independentBlend, geometryShader, textureCompressionBC. A device below 1.3 also needs
+// the extensions that carry what 1.3 made core: VK_KHR_synchronization2, VK_EXT_extended_dynamic_state and
+// VK_EXT_extended_dynamic_state2 with their features (vk_compat.h). Dynamic rendering and VK_EXT_depth_clip_control
+// are optional: without them passes run over render passes (vk_compat_rp.c) and the vertex shader of a pipeline in
+// the -w..w depth mode rescales z itself (vk_pipeline.c).
 // Optional (flag set in VkCtx when enabled): the has_* members.
 typedef struct VkCtx {
     VkInstance instance;
@@ -34,7 +35,9 @@ typedef struct VkCtx {
     int validation;                         // layer active
     uint32_t api_version;                   // what the runtime runs at: the lower of the device's and the instance's
     int core13;                             // api_version >= 1.3; else the 1.3 pieces come from extensions (vk_compat.h)
-    int has_subgroup_size_control,          // the feature is enabled (core in 1.3, else VK_EXT_subgroup_size_control)
+    int has_dynamic_rendering,              // vkCmdBeginRendering is the driver's; 0: vk_compat_rp.c emulates it over render passes
+        has_depth_clip_control,             // VK_EXT_depth_clip_control: negativeOneToOne pipelines; 0: the vertex shader rescales z
+        has_subgroup_size_control,          // the feature is enabled (core in 1.3, else VK_EXT_subgroup_size_control)
         has_format_feature_flags2,          // VkFormatProperties3 can be asked for (core in 1.3, else VK_KHR_format_feature_flags2)
         has_maintenance4;                   // vkGetDeviceImageMemoryRequirements is available
     int has_custom_border_color, has_eds, has_eds2, has_eds3, has_vertex_input_dynamic_state,
@@ -354,6 +357,7 @@ uint64_t vk_upload_flush(int wait);
 // Deferred destruction: freed once the upload batches recorded so far and the timeline value last noted have completed.
 void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestroyImage only
 void vk_defer_view(VkImageView view);
+void vk_defer_framebuffer(VkFramebuffer fb);   // vk_compat_rp.c: made while a pass begins; gone once the GPU passed that submission
 void vk_exec_image_gone(VkImage image);   // destroy_tex, texture lock held: the replay's views of image go with it
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
 // free(p) once the GPU is past the submission being recorded, like the deferrals above: host records that a recording

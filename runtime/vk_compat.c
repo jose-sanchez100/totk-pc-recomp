@@ -6,12 +6,21 @@
 
 VkCompat vk_cp;
 
-int vk_compat_load(VkDevice dev, int core13, int maintenance4) {
+int vk_compat_load(VkDevice dev, int core13, int maintenance4, int dynamic_rendering) {
+    vk_compat_emulate_rendering = !dynamic_rendering;
     if (core13) {   // the runtime's calls on a 1.3 device are the loader's, as they were before the 1.2 path
         vk_compat_core(&vk_cp);
+        if (!dynamic_rendering) vk_compat_rp_setup(&vk_cp);   // TOTK_VK_NO_DYNAMIC_RENDERING: the emulation on a 1.3 device
         return 1;
     }
     int missing = 0;
+    if (dynamic_rendering) {   // VK_KHR_dynamic_rendering
+        vk_cp.CmdBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(dev, "vkCmdBeginRenderingKHR");
+        vk_cp.CmdEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(dev, "vkCmdEndRenderingKHR");
+        if (!vk_cp.CmdBeginRendering || !vk_cp.CmdEndRendering) rt_log("vk: vkCmdBeginRenderingKHR is missing"), missing++;
+    } else {
+        vk_compat_rp_setup(&vk_cp);
+    }
 #define VK_COMPAT_LOAD(name, sfx)                                                                                     \
     do {                                                                                                              \
         const char *n = "vk" #name #sfx;                                                                              \

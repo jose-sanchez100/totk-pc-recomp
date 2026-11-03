@@ -55,6 +55,7 @@
  "check.vulkan_missing": "No Vulkan driver is installed. Install the latest driver for your graphics card.",
  "check.vulkan_no_device": "Vulkan finds no graphics card. Install the latest driver for your graphics card.",
  "check.vulkan_too_old": "The game needs a graphics card with Vulkan 1.2 or newer; found: {devices}. Update the graphics driver.",
+ "check.vulkan_extensions": "The graphics card lacks Vulkan extensions the game needs; found: {devices}. Update the graphics driver, or use a newer card.",
  "check.no_display": "Preparing the shaders needs a display. Run the setup from the desktop session, or export DISPLAY=:0 (on a Steam Deck in Game Mode also XDG_RUNTIME_DIR=/run/user/1000).",
  "check.inputs_needed": "The game files are needed: choose the base game, the 1.1.0 or 1.2.1 or 1.4.3 update and prod.keys.",
  "check.input_missing": "File not found ({input}): {path}",

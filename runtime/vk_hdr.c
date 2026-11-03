@@ -577,7 +577,9 @@ static int ui_pipeline(VkCtx *c, VkFormat fmt) {
                                        .stageCount = 2, .pStages = st, .pVertexInputState = &vi,
                                        .pInputAssemblyState = &ia, .pViewportState = &vp, .pRasterizationState = &rs,
                                        .pMultisampleState = &ms, .pColorBlendState = &cb, .pDynamicState = &ds,
-                                       .layout = H.ui_layout};
+                                       .layout = H.ui_layout,
+                                       .renderPass = vk_compat_pipeline_pass(c->device, 1, &fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 1)};
+    if (gi.renderPass) gi.pNext = NULL;   // no dynamic rendering: the render pass of the one colour format (vk_compat_rp.c)
     VkResult r = vs && fs ? vkCreateGraphicsPipelines(c->device, VK_NULL_HANDLE, 1, &gi, NULL, &H.ui) : VK_ERROR_UNKNOWN;
     if (vs) vkDestroyShaderModule(c->device, vs, NULL);
     if (fs) vkDestroyShaderModule(c->device, fs, NULL);
@@ -600,7 +602,10 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dst_view,
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
+    VkCompatRenderingInfo cri;
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .pNext = vk_compat_rendering_next(&cri, 1, &fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 1),
+                          .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
     vkCmdBeginRendering(cb, &ri);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, H.ui);

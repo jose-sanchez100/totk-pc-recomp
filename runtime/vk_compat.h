@@ -7,9 +7,14 @@
 // never exported.
 #pragma once
 
+// A device without VK_KHR_dynamic_rendering (a Kepler GPU's last driver is Vulkan 1.2.175) gets vk_compat_rp.c's
+// emulation of the two rendering commands over render passes and framebuffers, and pipelines are made against a
+// render pass (vk_compat_pipeline_pass). The emulation needs what a VkRenderingInfo does not carry, the attachments'
+// formats and sample count: callers chain a VkCompatRenderingInfo (vk_compat_rendering_next) to the VkRenderingInfo.
+
 // X(name without the "vk" prefix, suffix of the extension that carries the function on a 1.2 device)
 #define VK_COMPAT_FNS(X)                                                                                              \
-    X(CmdBeginRendering, KHR) X(CmdEndRendering, KHR) X(CmdPipelineBarrier2, KHR) X(CmdWriteTimestamp2, KHR)          \
+    X(CmdPipelineBarrier2, KHR) X(CmdWriteTimestamp2, KHR)                                                            \
     X(QueueSubmit2, KHR)                                                                                              \
     X(CmdSetCullMode, EXT) X(CmdSetFrontFace, EXT) X(CmdSetPrimitiveTopology, EXT) X(CmdSetViewportWithCount, EXT)    \
     X(CmdSetScissorWithCount, EXT) X(CmdBindVertexBuffers2, EXT) X(CmdSetDepthTestEnable, EXT)                        \
@@ -21,14 +26,53 @@ typedef struct VkCompat {
 #define VK_COMPAT_FIELD(name, sfx) PFN_vk##name name;
     VK_COMPAT_FNS(VK_COMPAT_FIELD)
 #undef VK_COMPAT_FIELD
+    PFN_vkCmdBeginRendering CmdBeginRendering;   // not in VK_COMPAT_FNS: the emulation can stand in for them
+    PFN_vkCmdEndRendering CmdEndRendering;
     PFN_vkGetDeviceImageMemoryRequirements GetDeviceImageMemoryRequirements;   // NULL without maintenance4
 } VkCompat;
 extern VkCompat vk_cp;
 
 // Fills vk_cp for dev. On a 1.3 device (core13) the table holds the loader's own entry points, the ones the runtime
 // called before the 1.2 path existed (vk_compat_core in vk_compat_core.c); below 1.3 it holds the extension functions,
-// and maintenance4 says that VK_KHR_maintenance4 is enabled. 0 (logged) when a function is missing.
-int vk_compat_load(VkDevice dev, int core13, int maintenance4);
+// and maintenance4 says that VK_KHR_maintenance4 is enabled. dynamic_rendering: the device has dynamic rendering
+// (core, or VK_KHR_dynamic_rendering enabled); without it vk_cp.CmdBeginRendering and CmdEndRendering are the
+// emulation. 0 (logged) when a function is missing.
+int vk_compat_load(VkDevice dev, int core13, int maintenance4, int dynamic_rendering);
+
+// ---- rendering without dynamic rendering (vk_compat_rp.c)
+
+#define VK_STRUCTURE_TYPE_COMPAT_RENDERING_INFO ((VkStructureType)0x7fffe001)   // private: never reaches a driver
+typedef struct VkCompatRenderingInfo {
+    VkStructureType sType;
+    const void *pNext;
+    VkFormat color[8];            // per colour slot of the VkRenderingInfo, VK_FORMAT_UNDEFINED for a slot without a view
+    VkFormat depth_stencil;       // the format of the depth/stencil attachment, VK_FORMAT_UNDEFINED for none
+    VkSampleCountFlagBits samples;
+} VkCompatRenderingInfo;
+
+extern int vk_compat_emulate_rendering;   // 1: the device lacks dynamic rendering (or TOTK_VK_NO_DYNAMIC_RENDERING is set)
+
+// Points the table's rendering commands at the emulation.
+void vk_compat_rp_setup(VkCompat *t);
+
+// The pNext a VkRenderingInfo needs: fills *out and returns it when rendering is emulated, else NULL. depth and stencil
+// are the VkPipelineRenderingCreateInfo formats (the depth/stencil attachment has the one that is set).
+const void *vk_compat_rendering_next(VkCompatRenderingInfo *out, uint32_t ncolor, const VkFormat *color, VkFormat depth,
+                                     VkFormat stencil, uint32_t samples);
+
+// The render pass a graphics pipeline for these attachment formats is created against; every pass the emulation begins
+// for the same formats and sample count is compatible with it. VK_NULL_HANDLE (and nothing to set) without emulation.
+VkRenderPass vk_compat_pipeline_pass(VkDevice dev, uint32_t ncolor, const VkFormat *color, VkFormat depth, VkFormat stencil,
+                                     uint32_t samples);
+
+// A render pass for the Dear ImGui backend, which draws into one colour attachment of format fmt.
+VkRenderPass vk_compat_color_pass(VkDevice dev, VkFormat fmt);
+
+// Destroys the render passes (device shutdown).
+void vk_compat_rp_shutdown(VkDevice dev);
+
+// vk_compat_rp.c leaves each framebuffer it makes to vk_defer_framebuffer (vk_memory.c, declared in vk.h), which
+// destroys it once the GPU is past the submission being recorded.
 
 // vkGetDeviceImageMemoryRequirements, or on a device without it a throwaway image made from the same create info.
 void vk_compat_image_requirements(VkDevice dev, const VkDeviceImageMemoryRequirements *info, VkMemoryRequirements2 *out);
@@ -44,7 +88,7 @@ void vk_compat_core(VkCompat *t);
 
 // The recorder (vk_rec.c) makes the real vkCmd* calls; every other file reaches them through the rc_* macros of vk_rec.h.
 #ifdef VK_REC_IMPL
-#define vkCmdBeginRendering vk_cp.CmdBeginRendering
+#define vkCmdBeginRendering vk_cp.CmdBeginRendering   // the emulation when the device has no dynamic rendering
 #define vkCmdEndRendering vk_cp.CmdEndRendering
 #define vkCmdPipelineBarrier2 vk_cp.CmdPipelineBarrier2
 #define vkCmdWriteTimestamp2 vk_cp.CmdWriteTimestamp2

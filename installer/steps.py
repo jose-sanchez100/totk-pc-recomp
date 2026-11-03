@@ -438,9 +438,15 @@ class Check(Step):
         devices = host['devices']
         if not devices:
             raise InstallError('check.vulkan_no_device')
-        if not any(tuple(d['api'][:2]) >= (1, 2) for d in devices):   # 1.2 runs on extensions (runtime/vk_compat.h)
+        v12 = [d for d in devices if tuple(d['api'][:2]) >= (1, 2)]   # 1.2 runs on extensions (runtime/vk_compat.h)
+        if not v12:
             raise InstallError('check.vulkan_too_old',
                                devices=', '.join(f'{d["name"]} ({d["api"][0]}.{d["api"][1]})' for d in devices))
+        # hostcheck.c lists the extensions runtime/vk_device.c requires that a device lacks; without them the runtime
+        # skips the device and the install would run to its last step before failing on it
+        if not any(not d.get('missing') for d in v12):
+            raise InstallError('check.vulkan_extensions',
+                               devices='; '.join(f'{d["name"]}: {", ".join(d["missing"])}' for d in v12))
         kernel = linux_kernel()
         if kernel and kernel < (6, 7):
             # Without userfaultfd's asynchronous write protection nothing tracks the CPU's writes: the game copies whole

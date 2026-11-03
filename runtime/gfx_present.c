@@ -698,7 +698,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                         .loadOp = menu_view ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_sc_ext}, .layerCount = 1,
+        VkFormat menu_fmt = menu_view ? VK_FORMAT_R8G8B8A8_UNORM : g_sc_fmt;   // what MenuTarget.format names
+        VkCompatRenderingInfo cri;
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                              .pNext = vk_compat_rendering_next(&cri, 1, &menu_fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 1),
+                              .renderArea = {{0, 0}, g_sc_ext}, .layerCount = 1,
                               .colorAttachmentCount = 1, .pColorAttachments = &ca};
         vkCmdBeginRendering(cb, &ri);
         menu_overlay_draw(cb);

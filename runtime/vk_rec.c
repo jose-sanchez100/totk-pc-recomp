@@ -708,17 +708,21 @@ void rc_vkCmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *di) {
 
 void rc_vkCmdBeginRendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
     if (!OWNED(cb)) { vkCmdBeginRendering(cb, ri); return; }
-    int chained = ri->pNext != NULL || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
+    // The one structure a VkRenderingInfo may chain is the emulation's (vk_compat.h), copied into the packet
+    const VkCompatRenderingInfo *ci = ri->pNext && ((const VkBaseInStructure *)ri->pNext)->sType == VK_STRUCTURE_TYPE_COMPAT_RENDERING_INFO
+                                          ? ri->pNext : NULL;
+    int chained = (ri->pNext != NULL && !(ci && !ci->pNext)) || (ri->pDepthAttachment && ri->pDepthAttachment->pNext) ||
                   (ri->pStencilAttachment && ri->pStencilAttachment->pNext);
     for (uint32_t i = 0; i < ri->colorAttachmentCount; i++) chained |= ri->pColorAttachments[i].pNext != NULL;
     if (chained) { FALLBACK(); vkCmdBeginRendering(cb, ri); return; }
     size_t c = sizeof *ri->pColorAttachments * ri->colorAttachmentCount, one = sizeof(VkRenderingAttachmentInfo);
-    VkRenderingInfo *a = put(R_BeginRendering, sizeof *a + A8(c) + 2 * A8(one));
+    VkRenderingInfo *a = put(R_BeginRendering, sizeof *a + A8(c) + 2 * A8(one) + (ci ? A8(sizeof *ci) : 0));
     uint8_t *at = (uint8_t *)(a + 1);
     *a = *ri;
     a->pColorAttachments = tail_copy(&at, ri->pColorAttachments, c);
     a->pDepthAttachment = ri->pDepthAttachment ? tail_copy(&at, ri->pDepthAttachment, one) : NULL;
     a->pStencilAttachment = ri->pStencilAttachment ? tail_copy(&at, ri->pStencilAttachment, one) : NULL;
+    a->pNext = ci ? tail_copy(&at, ci, sizeof *ci) : NULL;
     pub();
 }
 

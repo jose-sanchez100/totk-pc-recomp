@@ -55,6 +55,8 @@ A laptop with an iGPU and a discrete GPU, or two cards, lists every GPU at the t
 - `set TOTK_GPU_INDEX=1` picks GPU 1 from that list.
 - `set TOTK_VK_API=1.2` runs the Vulkan 1.2 path on any GPU (the 1.3 commands come from extensions). The log line
   `vk: using gpu N: ...` says which version the game runs as.
+- `set TOTK_VK_NO_DYNAMIC_RENDERING=1` runs the path for drivers without `VK_KHR_dynamic_rendering` (old NVIDIA Kepler
+  cards): passes go over render passes. The log line `vk: dynamic rendering: ...` says which one a run uses.
 
 The line `vk: using gpu N: <name>` says which one ran.
 

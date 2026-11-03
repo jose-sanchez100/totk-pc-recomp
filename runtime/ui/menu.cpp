@@ -52,6 +52,8 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 int vk_exec_replay_workers(void);
+extern "C" int vk_compat_emulate_rendering;                       // vk_compat_rp.c: the device has no dynamic rendering
+extern "C" VkRenderPass vk_compat_color_pass(VkDevice dev, VkFormat fmt);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
@@ -261,11 +263,15 @@ static int vk_up(const MenuTarget *t) {
     ii.MinImageCount = 2;
     ii.ImageCount = 4;   // vertex buffers rotate per recorded frame: more than gfx_present.c's 2 frames in flight
     ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    ii.UseDynamicRendering = true;
     g_vk_fmt = t->format;
-    ii.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    ii.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    ii.PipelineRenderingCreateInfo.pColorAttachmentFormats = &g_vk_fmt;
+    if (vk_compat_emulate_rendering) {   // no dynamic rendering: the render pass the overlay's pass is compatible with
+        ii.RenderPass = vk_compat_color_pass(t->device, g_vk_fmt);
+    } else {
+        ii.UseDynamicRendering = true;
+        ii.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        ii.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        ii.PipelineRenderingCreateInfo.pColorAttachmentFormats = &g_vk_fmt;
+    }
     if (!ImGui_ImplVulkan_Init(&ii)) return 0;
     g_vk_ok = 1;
     return 1;

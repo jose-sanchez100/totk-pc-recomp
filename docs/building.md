@@ -201,10 +201,17 @@ Requirements:
 
 - Linux 6.7 or later: the write watch uses userfaultfd write protection with `PAGEMAP_SCAN`. SteamOS 3.8 qualifies.
 - A Vulkan 1.3 driver with `VK_EXT_external_memory_host` (RADV, NVIDIA). A Vulkan 1.2 driver also works when it has
-  `VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, `VK_EXT_extended_dynamic_state` and
-  `VK_EXT_extended_dynamic_state2` with their features: the runtime calls the 1.3 commands through those extensions
-  (`runtime/vk_compat.h`). `TOTK_VK_API=1.2` makes a 1.3 GPU take that path, and with `TOTK_VK_VALIDATION=1` the validation
-  layer then reports any 1.3 command the runtime calls without them.
+  `VK_KHR_synchronization2`, `VK_EXT_extended_dynamic_state` and `VK_EXT_extended_dynamic_state2` with their features:
+  the runtime calls the 1.3 commands through those extensions (`runtime/vk_compat.h`). `TOTK_VK_API=1.2` makes a 1.3 GPU
+  take that path, and with `TOTK_VK_VALIDATION=1` the validation layer then reports any 1.3 command the runtime calls
+  without them.
+- `VK_KHR_dynamic_rendering` and `VK_EXT_depth_clip_control` are optional. A driver without dynamic rendering (the last
+  Kepler driver, Vulkan 1.2.175) runs every pass over a render pass and a framebuffer made for it
+  (`runtime/vk_compat_rp.c`), and pipelines are created against the render pass of their target formats; without depth
+  clip control a vertex shader in the -w..w depth mode gets z rescaled to (z + w) / 2 (`spirv_clip_z`,
+  `runtime/vk_pipeline.c`), and graphics pipeline libraries stay off. `TOTK_VK_NO_DYNAMIC_RENDERING=1` runs the render
+  pass path on any GPU; the log line `vk: dynamic rendering: ...` says which one a run uses. Neither path has run the
+  game on a Kepler card yet.
 - Packages on Arch:
 
   ```sh

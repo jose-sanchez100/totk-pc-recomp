@@ -675,7 +675,11 @@ void vk_exec_pass_begin(VkExec *ex) {
         vk_exec_draw_shaders(ex, &m->first[0], &m->first[1]);
         ex->mark_draws0 = ex->fr.draws;
     }
-    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}},
+    VkCompatRenderingInfo cri;   // formats and samples for a device without dynamic rendering (vk_compat.h)
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .pNext = vk_compat_rendering_next(&cri, ex->pass_ncolor, ex->pass_color, ex->pass_depth,
+                                                            ex->pass_stencil, ex->pass_samples),
+                          .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}},
                           .layerCount = ex->pass_layers, .colorAttachmentCount = ex->pass_ncolor,
                           .pColorAttachments = ca,
                           .pDepthAttachment = ex->pass_depth ? &da : NULL,

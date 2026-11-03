@@ -174,13 +174,11 @@ static int create_instance(void) {
 }
 
 static const char *const k_required_ext[] = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-    VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
 
 // What a device below Vulkan 1.3 needs on top (the commands 1.3 made core, vk_compat.h).
 static const char *const k_required_ext_12[] = {
-    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
-    VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
+    VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME};
 
 // Name of the first missing required extension, or NULL.
 static const char *missing_required(VkPhysicalDevice pd, int core13) {
@@ -316,6 +314,11 @@ static int create_device(void) {
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
     const int core13 = g_vk.core13;
+    // Dynamic rendering is the driver's where it has it; TOTK_VK_NO_DYNAMIC_RENDERING=1 runs the render pass emulation
+    // (vk_compat_rp.c) on such a device too, to test it
+    const char *no_dr = cfg_get("TOTK_VK_NO_DYNAMIC_RENDERING");
+    const int want_dr = !(no_dr && *no_dr && strcmp(no_dr, "0"));
+    g_vk.has_dynamic_rendering = want_dr && (core13 || has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME));
 
     FeatureChain *c = calloc(1, sizeof *c);
     void **tail = &c->f2.pNext;
@@ -329,9 +332,11 @@ static int create_device(void) {
     } else {
         // Below 1.3 the same features come as extensions (vk_compat.h); the extended dynamic state ones are chained with
         // the optional extensions below, where they are always present, since missing_required asked for them.
-        ext[n_ext++] = VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME;
+        if (g_vk.has_dynamic_rendering) {
+            ext[n_ext++] = VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME;
+            CHAIN(dr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR);
+        }
         ext[n_ext++] = VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME;
-        CHAIN(dr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR);
         CHAIN(s2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR);
         if (has_ext(ep, ne, VK_KHR_MAINTENANCE_4_EXTENSION_NAME)) {
             g_vk.has_maintenance4 = 1;
@@ -352,7 +357,11 @@ static int create_device(void) {
             CHAIN(f4444, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_4444_FORMATS_FEATURES_EXT);
         }
     }
-    CHAIN(clip, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT);
+    if (has_ext(ep, ne, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME)) {
+        g_vk.has_depth_clip_control = 1;
+        ext[n_ext++] = VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME;
+        CHAIN(clip, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT);
+    }
 #define OPTIONAL_EXT(flag, name, member, stype) do { \
         if (has_ext(ep, ne, name)) { g_vk.flag = 1; ext[n_ext++] = name; CHAIN(member, stype); } } while (0)
     OPTIONAL_EXT(has_custom_border_color, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, cbc, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT);
@@ -377,7 +386,7 @@ static int create_device(void) {
     }
     // Feedback loops (vk.h VkCtx.feedback): the layout, and barriers inside dynamic rendering
     int has_fbl = 0, has_lr = 0;
-    if (has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
+    if (g_vk.has_dynamic_rendering && has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
         has_ext(ep, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME)) {
         has_fbl = has_lr = 1;
         ext[n_ext++] = VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME;
@@ -404,7 +413,10 @@ static int create_device(void) {
     }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
-    if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
+    // (not under the render pass emulation, nor without depth clip control: the libraries' render pass would have to
+    // be one per set of formats, and the pre-rasterization library does not rescale z)
+    if (g_vk.has_dynamic_rendering && g_vk.has_depth_clip_control && has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) &&
+        has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
         ext[n_ext++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME;
         gpl_link = tail;
@@ -427,12 +439,12 @@ static int create_device(void) {
     const VkPhysicalDeviceFeatures *h = &c->f2.features;
     const char *miss = NULL;
     if (!c->f12.timelineSemaphore) miss = "timelineSemaphore";
-    else if (!(core13 ? c->f13.dynamicRendering : c->dr.dynamicRendering)) miss = "dynamicRendering";
+    else if (g_vk.has_dynamic_rendering && !(core13 ? c->f13.dynamicRendering : c->dr.dynamicRendering)) miss = "dynamicRendering";
     else if (!(core13 ? c->f13.synchronization2 : c->s2.synchronization2)) miss = "synchronization2";
     else if (!core13 && !c->eds.extendedDynamicState) miss = "extendedDynamicState";
     else if (!core13 && !c->eds2.extendedDynamicState2) miss = "extendedDynamicState2";
     else if (!h->shaderStorageImageWriteWithoutFormat) miss = "shaderStorageImageWriteWithoutFormat";
-    else if (!c->clip.depthClipControl) miss = "depthClipControl";
+    else if (g_vk.has_depth_clip_control && !c->clip.depthClipControl) miss = "depthClipControl";
     else if (!h->shaderInt64) miss = "shaderInt64";
     else if (!h->samplerAnisotropy) miss = "samplerAnisotropy";
     else if (!h->independentBlend) miss = "independentBlend";
@@ -473,10 +485,13 @@ static int create_device(void) {
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
-    if (!vk_compat_load(g_vk.device, core13, g_vk.has_maintenance4 && !core13)) {
+    if (!vk_compat_load(g_vk.device, core13, g_vk.has_maintenance4 && !core13, g_vk.has_dynamic_rendering)) {
         rt_log("vk: %s: a function of the Vulkan 1.3 set is missing (see above)", g_vk.props.deviceName);
         return 0;
     }
+    rt_log("vk: dynamic rendering: %s; depth clip control: %s",
+           g_vk.has_dynamic_rendering ? "driver" : "emulated over render passes (vk_compat_rp.c)",
+           g_vk.has_depth_clip_control ? "driver" : "the vertex shader rescales z");
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
@@ -522,6 +537,7 @@ static void destroy_all(void) {
     if (g_vk.device) vk_crumbs_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
     vk_headroom_stop();
+    if (g_vk.device) vk_compat_rp_shutdown(g_vk.device);
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
     if (g_vk.device) vkDestroyDevice(g_vk.device, NULL);
     if (g_vk.messenger) {

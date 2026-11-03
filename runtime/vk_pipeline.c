@@ -796,6 +796,108 @@ static uint32_t *spirv_add_outputs(const uint32_t *w, uint64_t n, uint32_t missi
     return o;
 }
 
+// A vertex shader for a device without VK_EXT_depth_clip_control, in the -w..w clip range (NVN's default depth mode,
+// docs/maxwell.md 1.5): before each return of the entry point gl_Position.z becomes (z + w) / 2. Vulkan clips z to
+// 0..w, and clipping -w <= z <= w is the same test on the rescaled value, which the viewport transform then maps to
+// depth as (z / w + 1) / 2, as the -w..w mode does. gl_Position is the Position member of the Output gl_PerVertex
+// struct the translator declares (a variable of its own is handled too). NULL when the module does not have that layout.
+static uint32_t *spirv_clip_z(const uint32_t *w, uint64_t n, uint64_t *out_n) {
+    enum { OP_MEMBER_DECORATE = 72, OP_FUNCTION_END = 56, OP_RETURN = 253, OP_ACCESS_CHAIN = 65, OP_LOAD = 61, OP_STORE = 62,
+           OP_COMPOSITE_EXTRACT = 81, OP_COMPOSITE_INSERT = 82, OP_FADD = 129, OP_FMUL = 133, OP_TYPE_STRUCT = 30,
+           BUILTIN_POSITION = 0 };
+    uint32_t bound = w[3], f32 = 0, v4 = 0, u32 = 0, half = 0, zero = 0, pos_struct = 0, pos_var_decl = 0, entry = 0;
+    uint32_t pos_member = 0;
+    struct { uint32_t id, type; } ptr[64];
+    struct { uint32_t id, ptr; } var[64];
+    struct { uint32_t id, type, value; } cst[128];
+    uint32_t structs[64];   // struct ids, so that a member decoration of something else is not taken for gl_PerVertex
+    int nptr = 0, nvar = 0, ncst = 0, nstruct = 0;
+    uint64_t fn_at = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) return NULL;
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_ENTRY_POINT && !entry && len >= 4 && a[0] == 0) entry = a[1];   // ExecutionModel Vertex
+        else if (op == OP_MEMBER_DECORATE && len == 5 && a[2] == SPV_DEC_BUILTIN && a[3] == BUILTIN_POSITION)
+            pos_struct = a[0], pos_member = a[1];
+        else if (op == SPV_OP_DECORATE && len == 4 && a[1] == SPV_DEC_BUILTIN && a[2] == BUILTIN_POSITION) pos_var_decl = a[0];
+        else if (op == OP_TYPE_STRUCT && nstruct < 64) structs[nstruct++] = a[0];
+        else if (op == SPV_OP_TYPE_FLOAT && len >= 3 && a[1] == 32) f32 = a[0];
+        else if (op == SPV_OP_TYPE_INT && len >= 4 && a[1] == 32 && !a[2]) u32 = a[0];
+        else if (op == SPV_OP_TYPE_VECTOR && len >= 4 && a[2] == 4 && f32 && a[1] == f32) v4 = a[0];
+        else if (op == SPV_OP_TYPE_POINTER && len >= 4 && a[1] == SPV_SC_OUTPUT && nptr < 64) ptr[nptr].id = a[0], ptr[nptr++].type = a[2];
+        else if (op == SPV_OP_VARIABLE && len >= 4 && a[2] == SPV_SC_OUTPUT && nvar < 64) var[nvar].id = a[1], var[nvar++].ptr = a[0];
+        else if (op == SPV_OP_CONSTANT && len == 4 && ncst < 128) cst[ncst].type = a[0], cst[ncst].id = a[1], cst[ncst++].value = a[2];
+        else if (op == SPV_OP_FUNCTION) { fn_at = i; break; }
+        i += len;
+    }
+    int found_struct = 0;
+    for (int i = 0; i < nstruct; i++) found_struct |= structs[i] == pos_struct;
+    if (!fn_at || !entry || !f32 || !v4 || (!pos_var_decl && !(pos_struct && found_struct))) return NULL;
+    for (int i = 0; i < ncst; i++) {
+        if (cst[i].type == f32 && cst[i].value == 0x3f000000) half = cst[i].id;
+        if (u32 && cst[i].type == u32 && cst[i].value == pos_member && pos_struct) zero = cst[i].id;   // the member's index
+    }
+    // The variable that holds gl_Position and the pointer type to its vec4
+    uint32_t pos = 0, ptr_v4 = 0;
+    for (int i = 0; i < nvar && !pos; i++) {
+        if (pos_var_decl) { if (var[i].id == pos_var_decl) pos = var[i].id; continue; }
+        for (int k = 0; k < nptr; k++)
+            if (ptr[k].id == var[i].ptr && ptr[k].type == pos_struct) pos = var[i].id;
+    }
+    for (int k = 0; k < nptr; k++)
+        if (ptr[k].type == v4) ptr_v4 = ptr[k].id;
+    if (!pos) return NULL;
+    uint32_t add[16];
+    int na = 0;
+    if (!ptr_v4 && !pos_var_decl) add[na++] = 4u << 16 | SPV_OP_TYPE_POINTER, add[na++] = ptr_v4 = bound++, add[na++] = SPV_SC_OUTPUT, add[na++] = v4;
+    if (!pos_var_decl && !zero) {
+        if (!u32) add[na++] = 4u << 16 | SPV_OP_TYPE_INT, add[na++] = u32 = bound++, add[na++] = 32, add[na++] = 0;
+        add[na++] = 4u << 16 | SPV_OP_CONSTANT, add[na++] = u32, add[na++] = zero = bound++, add[na++] = pos_member;
+    }
+    if (!half) add[na++] = 4u << 16 | SPV_OP_CONSTANT, add[na++] = f32, add[na++] = half = bound++, add[na++] = 0x3f000000;
+    int nret = 0, in_entry = 0;
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) return NULL;
+        if (op == SPV_OP_FUNCTION) in_entry = w[i + 2] == entry;
+        else if (op == OP_RETURN && in_entry) nret++;
+        i += len;
+    }
+    if (!nret) return NULL;
+    // The epilogue is at most 38 words: [access chain,] load, 2 extracts, add, multiply, insert, store
+    uint64_t total = n + (uint64_t)na + (uint64_t)nret * 38;
+    uint32_t *o = malloc(total * 4), *p = o;
+    if (!o) return NULL;
+    memcpy(p, w, 5 * 4), p += 5;
+    memcpy(p, w + 5, (fn_at - 5) * 4), p += fn_at - 5;
+    memcpy(p, add, (size_t)na * 4), p += na;
+    in_entry = 0;
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (op == SPV_OP_FUNCTION) in_entry = w[i + 2] == entry;
+        if (op == OP_RETURN && in_entry) {
+            uint32_t ref = pos, v = bound++, zc = bound++, wc = bound++, sum = bound++, mid = bound++, np = bound++;
+            if (!pos_var_decl) {
+                ref = bound++;
+                *p++ = 5u << 16 | OP_ACCESS_CHAIN, *p++ = ptr_v4, *p++ = ref, *p++ = pos, *p++ = zero;
+            }
+            *p++ = 4u << 16 | OP_LOAD, *p++ = v4, *p++ = v, *p++ = ref;
+            *p++ = 5u << 16 | OP_COMPOSITE_EXTRACT, *p++ = f32, *p++ = zc, *p++ = v, *p++ = 2;
+            *p++ = 5u << 16 | OP_COMPOSITE_EXTRACT, *p++ = f32, *p++ = wc, *p++ = v, *p++ = 3;
+            *p++ = 5u << 16 | OP_FADD, *p++ = f32, *p++ = sum, *p++ = zc, *p++ = wc;
+            *p++ = 5u << 16 | OP_FMUL, *p++ = f32, *p++ = mid, *p++ = sum, *p++ = half;
+            *p++ = 6u << 16 | OP_COMPOSITE_INSERT, *p++ = v4, *p++ = np, *p++ = mid, *p++ = v, *p++ = 2;
+            *p++ = 3u << 16 | OP_STORE, *p++ = ref, *p++ = np;
+        }
+        memcpy(p, w + i, (size_t)len * 4), p += len;
+        i += len;
+    }
+    o[3] = bound;
+    *out_n = (uint64_t)(p - o);
+    return o;
+}
+
 // Two fixes for what the translator declares but a shader does not use (NULL: nothing to change):
 //  - the fragment shader interlock capability and extension, which Ryujinx adds to every fragment shader when the host
 //    reports interlock support (SpirvGenerator.cs) and vk_device.c does not enable; kept when the shader interlocks;
@@ -1385,6 +1487,12 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
         // A bound colour target outside the shader's output map gets write mask 0 (target_wmask)
         if (fcode) fm = make_module(fcode, fw);
     }
+    if (k->minus_w && !vk_ctx()->has_depth_clip_control) {   // no VK_EXT_depth_clip_control: z is rescaled in the shader
+        uint64_t n3 = 0;
+        uint32_t *z = spirv_clip_z(vcode, vw, &n3);
+        if (z) free(vpatched), vcode = vpatched = z, vw = n3;
+        else LOG_ONCE("vk_pipeline: cannot rescale gl_Position.z for the -w..w depth mode: depth is wrong for these draws");
+    }
     vm = make_module(vcode, vw);
     free(vpatched), free(fpatched);
     VkPipeline pipe = VK_NULL_HANDLE;
@@ -1416,7 +1524,8 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
                                                  .topology = class_base[k->topo_class]};
     VkPipelineViewportDepthClipControlCreateInfoEXT clip = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT,
                                                             .negativeOneToOne = k->minus_w};
-    VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .pNext = &clip};
+    VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                            .pNext = vk_ctx()->has_depth_clip_control ? &clip : NULL};
     // NVN's default is the last vertex (SetProvokingVertexMode, nvn_ext.c); Vulkan's is the first.
     VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pvs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
@@ -1456,6 +1565,10 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
                                        .pDynamicState = &dy, .layout = l->layout};
     if (k->fbl & 1) pi.flags |= VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     if (k->fbl & 2) pi.flags |= VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+    // Without dynamic rendering the pipeline is made against the render pass of its target formats (vk_compat_rp.c)
+    if ((pi.renderPass = vk_compat_pipeline_pass(P.device, k->n_color, (const VkFormat *)k->color, (VkFormat)k->depth,
+                                                 (VkFormat)k->stencil, k->samples)))
+        pi.pNext = NULL;
     uint64_t p0 = perf_begin();
     plat_mutex_lock_shared(&cache_use);
     VkResult r = vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe);

@@ -54,7 +54,7 @@ A laptop with an iGPU and a discrete GPU, or two cards, lists every GPU at the t
 - `set TOTK_GPU_NAME=Radeon` picks the first usable GPU whose name contains that text (case does not matter).
 - `set TOTK_GPU_INDEX=1` picks GPU 1 from that list.
 - `set TOTK_VK_API=1.2` runs the Vulkan 1.2 path on any GPU (the 1.3 commands come from extensions). The log line
-  `vk: using gpu N: ...` says which version the game runs as. DLAA needs a 1.3 device.
+  `vk: using gpu N: ...` says which version the game runs as.
 
 The line `vk: using gpu N: <name>` says which one ran.
 

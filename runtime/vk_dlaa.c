@@ -25,6 +25,7 @@
 #include "vk_exec.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
+#include "dlaa_mv_12_spv.h"   // the same shader as SPIR-V 1.5, for a device below Vulkan 1.3 (tools/build_shaders.py VARIANTS)
 
 typedef int NgxResult;   // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n failures
 #define NGX_OK(r) (((unsigned)(r) & 0xFFF00000u) != 0xBAD00000u)
@@ -190,10 +191,6 @@ static int vtable_ok(void) {
 
 void vk_dlaa_init(void) {
     if (!vk_dlaa_wanted() || !core_load()) return;
-    if (!vk_ctx()->core13) {   // the motion-vector shader (dlaa_mv_spv.h) is SPIR-V 1.6, which a Vulkan 1.2 device rejects
-        rt_log("dlaa: off, it needs a Vulkan 1.3 device (this one runs as 1.2)");
-        return;
-    }
     // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
     if (!plat_exe_dir_wide(wdir, PLAT_PATH_MAX)) {
@@ -493,8 +490,9 @@ static int mv_init(void) {
                               .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof dlaa_mv_spv,
-                                   .pCode = dlaa_mv_spv};
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                   .codeSize = c->core13 ? sizeof dlaa_mv_spv : sizeof dlaa_mv_12_spv,
+                                   .pCode = c->core13 ? dlaa_mv_spv : dlaa_mv_12_spv};
     VkShaderModule m = VK_NULL_HANDLE;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 2 * CAM_SLOT,
                              .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};

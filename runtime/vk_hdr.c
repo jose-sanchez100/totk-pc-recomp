@@ -592,8 +592,10 @@ static int ui_pipeline(VkCtx *c, VkFormat fmt) {
     return 1;
 }
 
-// The menu image onto dst (a swapchain image in COLOR_ATTACHMENT_OPTIMAL, view dst_view of format fmt).
-void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h) {
+// The menu image onto dst (a swapchain image in COLOR_ATTACHMENT_OPTIMAL, view dst_view of format fmt). own: the
+// present slot's framebuffer list, for the pass over emulated render passes (VkCompatRenderingInfo.own).
+void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h,
+                       struct VkCompatFbList *own) {
     VkCtx *c = vk_ctx();
     if (!H.ok || !H.menu.img || !ui_pipeline(c, fmt)) return;
     barrier(cb, H.menu.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -607,6 +609,7 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
                           .pNext = vk_compat_rendering_next(&cri, 1, &fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 1),
                           .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
+    cri.own = own;
     vkCmdBeginRendering(cb, &ri);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, H.ui);
     VkViewport v = {0, 0, (float)w, (float)h, 0, 1};

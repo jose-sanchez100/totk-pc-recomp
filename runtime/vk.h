@@ -175,7 +175,9 @@ void vk_hdr_set_active(int on);
 int vk_hdr_active(void);
 VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
 VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
-void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
+struct VkCompatFbList;   // vk_compat.h
+void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h,
+                       struct VkCompatFbList *own);
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
 void vk_hdr_release(void);   // before the device goes away
 // The support buffer's HDR parameters (vk_exec_draw.c support_fill, read by shaders/hdr_tonemap.frag).

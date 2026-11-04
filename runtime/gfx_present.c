@@ -134,6 +134,7 @@ static VkSemaphore g_render_done[MAX_IMAGES];
 static VkCommandPool g_pool;
 static VkCommandBuffer g_cb[FRAMES];
 static VkFence g_fence[FRAMES];
+static VkCompatFbList g_own_fb[FRAMES];   // framebuffers of the slot's emulated passes, freed after its fence (vk_compat.h)
 static VkSemaphore g_acquire[FRAMES];
 static unsigned g_frame;
 static int g_capture;
@@ -336,6 +337,7 @@ static int build_swapchain(void) {
 
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
+    for (int i = 0; i < FRAMES; i++) vk_compat_fb_release(c->device, &g_own_fb[i]);   // they name the views below
     VkSwapchainKHR old = g_sc;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = count,
@@ -598,6 +600,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         rt_log("gfx: present fence wait timed out");
         goto out;
     }
+    vk_compat_fb_release(c->device, &g_own_fb[slot]);   // the slot's last command buffer has run
     uint32_t idx = 0;
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -704,10 +707,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                               .pNext = vk_compat_rendering_next(&cri, 1, &menu_fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, 1),
                               .renderArea = {{0, 0}, g_sc_ext}, .layerCount = 1,
                               .colorAttachmentCount = 1, .pColorAttachments = &ca};
+        cri.own = &g_own_fb[slot];   // this command buffer signals g_fence[slot], not the replay's timeline
         vkCmdBeginRendering(cb, &ri);
         menu_overlay_draw(cb);
         vkCmdEndRendering(cb);
-        if (menu_view) vk_hdr_ui_compose(cb, g_sc_view[idx], g_sc_fmt, g_sc_ext.width, g_sc_ext.height);
+        if (menu_view) vk_hdr_ui_compose(cb, g_sc_view[idx], g_sc_fmt, g_sc_ext.width, g_sc_ext.height, &g_own_fb[slot]);
         last = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         last_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         last_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -797,6 +801,7 @@ void gfx_window_release_vk(void) {
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
         vk_queue_unlock();
+        for (int i = 0; i < FRAMES; i++) vk_compat_fb_release(c->device, &g_own_fb[i]);
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();

@@ -42,6 +42,11 @@ int vk_compat_load(VkDevice dev, int core13, int maintenance4, int dynamic_rende
 // ---- rendering without dynamic rendering (vk_compat_rp.c)
 
 #define VK_STRUCTURE_TYPE_COMPAT_RENDERING_INFO ((VkStructureType)0x7fffe001)   // private: never reaches a driver
+// Framebuffers a caller destroys itself (vk_compat_fb_release) once the GPU is past the command buffer that used them.
+typedef struct VkCompatFbList {
+    VkFramebuffer fb[4];
+    uint32_t n;
+} VkCompatFbList;
 typedef struct VkCompatRenderingInfo {
     VkStructureType sType;
     const void *pNext;
@@ -52,6 +57,10 @@ typedef struct VkCompatRenderingInfo {
     // submission, vk_exec.c vk_exec_pass_begin), so its framebuffer may serve later passes of that submission with the
     // same render pass, views and size (vk_compat_rp.c, TOTK_VK_FB_CACHE). 0: a framebuffer made for this pass alone.
     uint64_t scope;
+    // Non-NULL: the pass's framebuffer goes into this list instead of to vk_defer_framebuffer. For command buffers
+    // whose submission signals a fence of its own instead of the timeline vk_defer_framebuffer waits on (the present,
+    // gfx_present.c). Not for command buffers the recorder thread (vk_rec.c) records: it begins the pass later.
+    VkCompatFbList *own;
 } VkCompatRenderingInfo;
 
 extern int vk_compat_emulate_rendering;   // 1: the device lacks dynamic rendering (or TOTK_VK_NO_DYNAMIC_RENDERING is set)
@@ -80,7 +89,10 @@ void vk_compat_fb_stats(uint64_t *made, uint64_t *reused);
 
 // vk_compat_rp.c leaves each framebuffer it makes to vk_defer_framebuffer (vk_memory.c, declared in vk.h), which
 // destroys it once the GPU is past the submission its pass belongs to (VkCompatRenderingInfo.scope), or the one being
-// recorded.
+// recorded; a pass with VkCompatRenderingInfo.own puts it in that list instead.
+
+// Destroys the framebuffers of a list and empties it. The caller has waited for the command buffer that used them.
+void vk_compat_fb_release(VkDevice dev, VkCompatFbList *l);
 
 // vkGetDeviceImageMemoryRequirements, or on a device without it a throwaway image made from the same create info.
 void vk_compat_image_requirements(VkDevice dev, const VkDeviceImageMemoryRequirements *info, VkMemoryRequirements2 *out);

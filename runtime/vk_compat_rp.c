@@ -187,19 +187,35 @@ static int fb_cache_on(void) {
 // submission being recorded). Stamped with the last submitted one, as when the recorder thread began a pass after the
 // replay had left the submission's walk, a framebuffer went before its submission ran, and a later pass that reused
 // it took the NVIDIA driver into freed memory.
-static VkFramebuffer fb_make(VkDevice dev, const FbKey *k, uint64_t scope) {
+// own: the caller's list (VkCompatRenderingInfo.own). The present's passes need it: their command buffer signals a
+// fence of its own, so a framebuffer stamped with the replay's timeline went once the GPU passed the last replay
+// submission, while the present command buffer that used it was still pending, or still being recorded with the
+// replay on its own thread (validation: vkDestroyFramebuffer on a framebuffer in use, then calls into a command
+// buffer left invalid by it).
+static VkFramebuffer fb_make(VkDevice dev, const FbKey *k, uint64_t scope, VkCompatFbList *own) {
     VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = k->rp,
                                   .attachmentCount = k->n, .pAttachments = k->v, .width = k->w, .height = k->h,
                                   .layers = k->layers};
     VkFramebuffer fb;
     if (vkCreateFramebuffer(dev, &fi, NULL, &fb) != VK_SUCCESS) rt_fatal("vk: vkCreateFramebuffer failed");
-    vk_defer_framebuffer(fb, scope);
+    if (own) {
+        if (own->n == sizeof own->fb / sizeof *own->fb) rt_fatal("vk: more than %u emulated passes in a command buffer "
+                                                                 "that keeps its framebuffers", own->n);
+        own->fb[own->n++] = fb;
+    } else {
+        vk_defer_framebuffer(fb, scope);
+    }
     __atomic_add_fetch(&fb_made, 1, __ATOMIC_RELAXED);
     return fb;
 }
 
-static VkFramebuffer fb_for(VkDevice dev, const FbKey *k, uint64_t scope) {
-    if (!scope || !fb_cache_on()) return fb_make(dev, k, scope);
+void vk_compat_fb_release(VkDevice dev, VkCompatFbList *l) {
+    for (uint32_t i = 0; i < l->n; i++) vkDestroyFramebuffer(dev, l->fb[i], NULL);
+    l->n = 0;
+}
+
+static VkFramebuffer fb_for(VkDevice dev, const FbKey *k, uint64_t scope, VkCompatFbList *own) {
+    if (!scope || own || !fb_cache_on()) return fb_make(dev, k, scope, own);
     uint64_t h = 1469598103934665603ull;   // FNV-1a over the key, zeroed before it was filled
     for (size_t i = 0; i < sizeof *k; i++) h = (h ^ ((const uint8_t *)k)[i]) * 1099511628211ull;
     plat_mutex_lock(&fb_lock);
@@ -212,7 +228,7 @@ static VkFramebuffer fb_for(VkDevice dev, const FbKey *k, uint64_t scope) {
             __atomic_add_fetch(&fb_reused, 1, __ATOMIC_RELAXED);
             return fb;
         }
-    VkFramebuffer fb = fb_make(dev, k, scope);
+    VkFramebuffer fb = fb_make(dev, k, scope, NULL);
     if (FB.used < FB_SLOTS / 4 * 3) FB.tag[i] = scope, FB.hash[i] = h, FB.key[i] = *k, FB.fb[i] = fb, FB.used++;
     plat_mutex_unlock(&fb_lock);
     return fb;
@@ -273,7 +289,7 @@ static void rp_begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
     fk.w = (uint32_t)ri->renderArea.offset.x + ri->renderArea.extent.width;
     fk.h = (uint32_t)ri->renderArea.offset.y + ri->renderArea.extent.height;
     fk.layers = ri->layerCount ? ri->layerCount : 1;
-    VkFramebuffer fb = fb_for(dev, &fk, ci->scope);
+    VkFramebuffer fb = fb_for(dev, &fk, ci->scope, ci->own);
     VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
                                 .renderArea = ri->renderArea, .clearValueCount = n, .pClearValues = clear};
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);

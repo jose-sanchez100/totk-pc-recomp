@@ -80,6 +80,7 @@ static struct {
     int vs_outs_all;                   // TOTK_VS_OUTS: 0 union of paired fragment inputs, 1 (all) all 32 output locations
     int dyn_vi, dyn_clamp, dyn_poly, dyn_blend_en, dyn_blend_eq, dyn_wmask, dyn_a2c;
     int f_logic_op, f_depth_clamp, f_fill_non_solid, f_dual_src;
+    int fbl_flags;                     // VK_FEEDBACK_LAYOUT: pipelines may take the feedback-loop flags (gkey_fill)
     int pv_last;                       // provokingVertexLast enabled: NVN's default is the last vertex
     VkShaderStageFlags sg32_stages;    // stages that accept requiredSubgroupSize = 32 (0: not available)
     VkDynamicState dyn[32];
@@ -260,6 +261,7 @@ static int ensure_init(void) {
     P.f_depth_clamp = f2.features.depthClamp;
     P.f_fill_non_solid = f2.features.fillModeNonSolid;
     P.f_dual_src = f2.features.dualSrcBlend;
+    P.fbl_flags = c->feedback == VK_FEEDBACK_LAYOUT;
 #define PROC(field, name) (P.field = (void *)vkGetDeviceProcAddr(c->device, name))
     PROC(push, "vkCmdPushDescriptorSetKHR");
     // Descriptor update templates (core 1.1; the push variant comes with VK_KHR_push_descriptor on 1.1): the driver
@@ -1390,7 +1392,11 @@ static void gkey_fill(const VkPipeState *s, GKey *k) {
     k->topo_class = (uint8_t)topology_class(vk_pipeline_topology(s->prim));
     k->minus_w = s->depth_minus_w != 0;
     k->dsb = s->fs && P.f_dual_src && uses_src1(s);
-    k->fbl = s->fs ? s->feedback : 0;
+    // Only under the feedback layout, the one mode that enables VK_EXT_attachment_feedback_loop_layout (vk_device.c).
+    // The live draws ask for the flags only then (vk_exec_draw.c, prepare_draw), but pipeline-keys.bin keeps the
+    // state as recorded: keys written on the dynamic rendering path carry them into the boot prewarm of a run over
+    // emulated render passes, and the flags without the extension are invalid there.
+    k->fbl = s->fs && P.fbl_flags ? s->feedback : 0;
     if (!P.dyn_clamp) k->clamp = s->depth_clamp && P.f_depth_clamp;
     if (!P.dyn_poly) k->poly_mode = (uint8_t)polygon_mode(s->poly.mode);
     if (!P.dyn_a2c) k->a2c = s->ms.a2c != 0;

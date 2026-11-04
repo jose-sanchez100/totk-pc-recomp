@@ -211,8 +211,8 @@ Requirements:
   and pipelines are created against the render pass of their target formats; without depth clip control a vertex
   shader in the -w..w depth mode gets z rescaled to (z + w) / 2 (`spirv_clip_z`, `runtime/vk_pipeline.c`), and
   graphics pipeline libraries stay off. `TOTK_VK_NO_DYNAMIC_RENDERING=1` runs the render
-  pass path on any GPU; the log line `vk: dynamic rendering: ...` says which one a run uses. Neither path has run the
-  game on a Kepler card yet.
+  pass path on any GPU; the log line `vk: dynamic rendering: ...` says which one a run uses. The render pass path runs
+  the game on a GTX 680 (2 GiB) with the Windows driver 475.14.
 - Packages on Arch:
 
   ```sh

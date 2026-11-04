@@ -39,6 +39,11 @@ build\<ver>\totk.exe
 `TOTK_VK_VALIDATION=1` turns on the Vulkan validation layer (it comes with the Vulkan SDK). It makes the game slower;
 do one run with it and one without (`set TOTK_VK_VALIDATION=`).
 
+On an RTX 2080 the layer has now and then crashed inside its own DLL (`VkLayer_khronos_validation.dll`) with the
+recorder thread on (`runtime/vk_rec.c`, the default except on AMD GPUs). Such a stop says nothing by itself about the
+game: run again, or do the validation run with `set TOTK_VK_RECORDER=0`, which makes every Vulkan call on the
+submitting thread.
+
 If the game stops with a lost device (the log says `device lost` or `VK_ERROR_DEVICE_LOST`), the lines starting with
 `vk: pass marks` name the render pass or dispatch the GPU was running. AMD GPUs write them by default. On an NVIDIA GPU,
 `set TOTK_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.

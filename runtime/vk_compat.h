@@ -48,6 +48,10 @@ typedef struct VkCompatRenderingInfo {
     VkFormat color[8];            // per colour slot of the VkRenderingInfo, VK_FORMAT_UNDEFINED for a slot without a view
     VkFormat depth_stencil;       // the format of the depth/stencil attachment, VK_FORMAT_UNDEFINED for none
     VkSampleCountFlagBits samples;
+    // Nonzero: every view of the pass lives until the GPU is past the submission this names (the fence of a replay
+    // submission, vk_exec.c vk_exec_pass_begin), so its framebuffer may serve later passes of that submission with the
+    // same render pass, views and size (vk_compat_rp.c, TOTK_VK_FB_CACHE). 0: a framebuffer made for this pass alone.
+    uint64_t scope;
 } VkCompatRenderingInfo;
 
 extern int vk_compat_emulate_rendering;   // 1: the device lacks dynamic rendering (or TOTK_VK_NO_DYNAMIC_RENDERING is set)
@@ -71,8 +75,12 @@ VkRenderPass vk_compat_color_pass(VkDevice dev, VkFormat fmt);
 // Destroys the render passes (device shutdown).
 void vk_compat_rp_shutdown(VkDevice dev);
 
+// Framebuffers the emulation made and the ones it reused for a later pass of a scope since the last call.
+void vk_compat_fb_stats(uint64_t *made, uint64_t *reused);
+
 // vk_compat_rp.c leaves each framebuffer it makes to vk_defer_framebuffer (vk_memory.c, declared in vk.h), which
-// destroys it once the GPU is past the submission being recorded.
+// destroys it once the GPU is past the submission its pass belongs to (VkCompatRenderingInfo.scope), or the one being
+// recorded.
 
 // vkGetDeviceImageMemoryRequirements, or on a device without it a throwaway image made from the same create info.
 void vk_compat_image_requirements(VkDevice dev, const VkDeviceImageMemoryRequirements *info, VkMemoryRequirements2 *out);

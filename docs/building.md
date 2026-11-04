@@ -206,10 +206,11 @@ Requirements:
   take that path, and with `TOTK_VK_VALIDATION=1` the validation layer then reports any 1.3 command the runtime calls
   without them.
 - `VK_KHR_dynamic_rendering` and `VK_EXT_depth_clip_control` are optional. A driver without dynamic rendering (the last
-  Kepler driver, Vulkan 1.2.175) runs every pass over a render pass and a framebuffer made for it
-  (`runtime/vk_compat_rp.c`), and pipelines are created against the render pass of their target formats; without depth
-  clip control a vertex shader in the -w..w depth mode gets z rescaled to (z + w) / 2 (`spirv_clip_z`,
-  `runtime/vk_pipeline.c`), and graphics pipeline libraries stay off. `TOTK_VK_NO_DYNAMIC_RENDERING=1` runs the render
+  Kepler driver, Vulkan 1.2.175) runs every pass over a render pass and a framebuffer, which later passes of the same
+  replay submission over the same targets reuse (`runtime/vk_compat_rp.c`; `TOTK_VK_FB_CACHE=0` makes one per pass),
+  and pipelines are created against the render pass of their target formats; without depth clip control a vertex
+  shader in the -w..w depth mode gets z rescaled to (z + w) / 2 (`spirv_clip_z`, `runtime/vk_pipeline.c`), and
+  graphics pipeline libraries stay off. `TOTK_VK_NO_DYNAMIC_RENDERING=1` runs the render
   pass path on any GPU; the log line `vk: dynamic rendering: ...` says which one a run uses. Neither path has run the
   game on a Kepler card yet.
 - Packages on Arch:

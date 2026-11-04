@@ -676,9 +676,11 @@ void vk_exec_pass_begin(VkExec *ex) {
         ex->mark_draws0 = ex->fr.draws;
     }
     VkCompatRenderingInfo cri;   // formats and samples for a device without dynamic rendering (vk_compat.h)
+    const void *compat = vk_compat_rendering_next(&cri, ex->pass_ncolor, ex->pass_color, ex->pass_depth,
+                                                  ex->pass_stencil, ex->pass_samples);
+    if (compat) cri.scope = ex->fence;   // the views are view_of's: they last until the GPU is past this submission
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                          .pNext = vk_compat_rendering_next(&cri, ex->pass_ncolor, ex->pass_color, ex->pass_depth,
-                                                            ex->pass_stencil, ex->pass_samples),
+                          .pNext = compat,
                           .renderArea = {{0, 0}, {ex->pass_w, ex->pass_h}},
                           .layerCount = ex->pass_layers, .colorAttachmentCount = ex->pass_ncolor,
                           .pColorAttachments = ca,
@@ -1711,6 +1713,12 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
                 o += snprintf(b + o, sizeof b - o, " %d:%.2f@%.2f%s", SC.ch[i].draws, SC.ch[i].ns / 1e6, SC.ch[i].start / 1e6,
                               SC.holds >> i & 1 ? "h" : "");
             rt_log("perf: chunked replay: the last submission's chunks (draws:ms@begun, h held)%s", b);
+        }
+        if (vk_compat_emulate_rendering) {   // vk_compat_rp.c fb_for: the recorder thread may still be behind
+            uint64_t made, reused;
+            vk_compat_fb_stats(&made, &reused);
+            rt_log("perf: emulated render passes per submission: framebuffers made %.1f, reused %.1f",
+                   (double)made / (double)n_subs, (double)reused / (double)n_subs);
         }
         n_subs = n_parts = 0;
         SC.subs = SC.chunked = SC.nchunks = SC.scan_ns = SC.first_ns = SC.last_ns = SC.rec_ns = SC.rec_max_ns = 0;

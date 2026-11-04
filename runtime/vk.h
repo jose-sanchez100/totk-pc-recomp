@@ -359,7 +359,10 @@ uint64_t vk_upload_flush(int wait);
 // Deferred destruction: freed once the upload batches recorded so far and the timeline value last noted have completed.
 void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestroyImage only
 void vk_defer_view(VkImageView view);
-void vk_defer_framebuffer(VkFramebuffer fb);   // vk_compat_rp.c: made while a pass begins; gone once the GPU passed that submission
+// vk_compat_rp.c: made while a pass begins; gone once the GPU passed that submission. after: the timeline value of the
+// submission the pass belongs to, 0 unknown. The recorder thread (vk_rec.c) begins passes after the replay has left
+// the submission's walk, when vk_exec_recording_fence no longer names it.
+void vk_defer_framebuffer(VkFramebuffer fb, uint64_t after);
 void vk_exec_image_gone(VkImage image);   // destroy_tex, texture lock held: the replay's views of image go with it
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
 // free(p) once the GPU is past the submission being recorded, like the deferrals above: host records that a recording

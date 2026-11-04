@@ -2696,7 +2696,8 @@ uint64_t vk_upload_flush(int wait) {
     return seq;
 }
 
-static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
+// after: a timeline value the GPU must also be past (0: none).
+static void defer_at(int kind, uint64_t handle, VmaAllocation alloc, uint64_t after) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
@@ -2712,12 +2713,15 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     // textures.c defer: vk_pending_seq).
     uint64_t tl = tl_noted;
     if (kind != DEAD_HOST && tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
+    if (after > tl) tl = after;   // vk_defer_framebuffer: the submission the pass belongs to
     dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
     if (kind != DEAD_HOST && kind != DEAD_FRAMEBUFFER)
         rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
                          vk_sync_fence_done());
     plat_rmutex_unlock(&cmd_lock);
 }
+
+static void defer(int kind, uint64_t handle, VmaAllocation alloc) { defer_at(kind, handle, alloc, 0); }
 
 static int dead_pending(void) {
     plat_once(&cmd_once, cmd_init, NULL);
@@ -2731,7 +2735,9 @@ void vk_defer_image(VkImage img, VmaAllocation alloc) {
     if (img) defer(alloc ? DEAD_IMAGE_VMA : DEAD_IMAGE, (uint64_t)(uintptr_t)img, alloc);
 }
 void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL); }
-void vk_defer_framebuffer(VkFramebuffer fb) { if (fb) defer(DEAD_FRAMEBUFFER, (uint64_t)(uintptr_t)fb, NULL); }
+void vk_defer_framebuffer(VkFramebuffer fb, uint64_t after) {
+    if (fb) defer_at(DEAD_FRAMEBUFFER, (uint64_t)(uintptr_t)fb, NULL, after);
+}
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
 }

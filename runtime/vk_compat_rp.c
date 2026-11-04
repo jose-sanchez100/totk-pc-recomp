@@ -1,8 +1,8 @@
 // Rendering on a device without VK_KHR_dynamic_rendering (vk_compat.h): vkCmdBeginRendering and vkCmdEndRendering over
-// a render pass with one subpass and a framebuffer made for the call, and the render pass a graphics pipeline is
-// created against. The runtime's passes keep every target in one layout for the whole pass (GENERAL, or the one the
-// caller names) and barrier before and after it, so the render pass leaves initialLayout = finalLayout = the layout
-// the subpass uses. Its one dependency is the subpass on itself, for the barriers of feedback loops (make_pass).
+// a render pass with one subpass and a framebuffer made for the call or kept from an earlier pass of the same replay
+// submission (fb_for), and the render pass a graphics pipeline is created against. The runtime's passes keep every
+// target in one layout for the whole pass (GENERAL, or the one the caller names) and barrier before and after it, so
+// the render pass leaves initialLayout = finalLayout = the layout the subpass uses. Its one dependency is the subpass on itself, for the barriers of feedback loops (make_pass).
 //
 // Render passes are cached by the formats, the sample count and the load/store operations and layouts, and shared by
 // every pass and pipeline with that key. Two render passes with the same formats and sample count are compatible
@@ -149,6 +149,80 @@ void vk_compat_rp_shutdown(VkDevice dev) {
     plat_mutex_unlock(&rp_lock);
 }
 
+// ---- framebuffers
+// Each pass used to get a framebuffer of its own. A pass whose VkCompatRenderingInfo names a scope (the replay's
+// passes: their views are vk_exec.c view_of's, destroyed by free_views once the GPU is past that submission) instead
+// takes the framebuffer an earlier pass of the same scope made for the same render pass, views and size, when there is
+// one: the replay ends and begins a pass again around copies, clears, dispatches and barriers, mostly over the same
+// targets. The table holds one scope's entries; the first pass of another scope empties it, so no entry outlives the
+// views it names and a view handle the driver hands out again later cannot meet a stale entry. Each framebuffer goes
+// to vk_defer_framebuffer when it is made, stamped with the submission being recorded, the lifetime of its views.
+// TOTK_VK_FB_CACHE: 1 (default), 0 (a framebuffer per pass, as before) or ab.
+typedef struct { VkRenderPass rp; VkImageView v[9]; uint32_t n, w, h, layers; } FbKey;
+#define FB_SLOTS 512                   // open addressing; past 3/4 full, further framebuffers of the scope are not kept
+static struct {
+    uint64_t scope;                    // the scope the table holds; a slot is in use when its tag equals it
+    uint32_t used;
+    uint64_t tag[FB_SLOTS], hash[FB_SLOTS];
+    FbKey key[FB_SLOTS];
+    VkFramebuffer fb[FB_SLOTS];
+} FB;
+static PlatMutex fb_lock = PLAT_MUTEX_INIT;
+static uint64_t fb_made, fb_reused;    // atomics: since the last vk_compat_fb_stats
+
+static int fb_cache_on(void) {
+    static int mode = -1;
+    int m = __atomic_load_n(&mode, __ATOMIC_RELAXED);
+    if (m < 0) {
+        m = rt_knob("VK_FB_CACHE", "1");
+        int prev = -1;
+        if (__atomic_compare_exchange_n(&mode, &prev, m, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            rt_log("vk: emulated render passes %s (TOTK_VK_FB_CACHE=%s)",
+                   m ? "reuse a submission's framebuffers" : "make a framebuffer per pass", m == 2 ? "ab" : m ? "1" : "0");
+    }
+    return RT_KNOB_ON(m);
+}
+
+// scope: the replay submission the pass belongs to, whose fence the framebuffer's destruction waits for (0: the
+// submission being recorded). Stamped with the last submitted one, as when the recorder thread began a pass after the
+// replay had left the submission's walk, a framebuffer went before its submission ran, and a later pass that reused
+// it took the NVIDIA driver into freed memory.
+static VkFramebuffer fb_make(VkDevice dev, const FbKey *k, uint64_t scope) {
+    VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = k->rp,
+                                  .attachmentCount = k->n, .pAttachments = k->v, .width = k->w, .height = k->h,
+                                  .layers = k->layers};
+    VkFramebuffer fb;
+    if (vkCreateFramebuffer(dev, &fi, NULL, &fb) != VK_SUCCESS) rt_fatal("vk: vkCreateFramebuffer failed");
+    vk_defer_framebuffer(fb, scope);
+    __atomic_add_fetch(&fb_made, 1, __ATOMIC_RELAXED);
+    return fb;
+}
+
+static VkFramebuffer fb_for(VkDevice dev, const FbKey *k, uint64_t scope) {
+    if (!scope || !fb_cache_on()) return fb_make(dev, k, scope);
+    uint64_t h = 1469598103934665603ull;   // FNV-1a over the key, zeroed before it was filled
+    for (size_t i = 0; i < sizeof *k; i++) h = (h ^ ((const uint8_t *)k)[i]) * 1099511628211ull;
+    plat_mutex_lock(&fb_lock);
+    if (FB.scope != scope) FB.scope = scope, FB.used = 0;
+    uint32_t i = (uint32_t)(h % FB_SLOTS);
+    for (; FB.tag[i] == scope; i = (i + 1) % FB_SLOTS)
+        if (FB.hash[i] == h && !memcmp(&FB.key[i], k, sizeof *k)) {
+            VkFramebuffer fb = FB.fb[i];
+            plat_mutex_unlock(&fb_lock);
+            __atomic_add_fetch(&fb_reused, 1, __ATOMIC_RELAXED);
+            return fb;
+        }
+    VkFramebuffer fb = fb_make(dev, k, scope);
+    if (FB.used < FB_SLOTS / 4 * 3) FB.tag[i] = scope, FB.hash[i] = h, FB.key[i] = *k, FB.fb[i] = fb, FB.used++;
+    plat_mutex_unlock(&fb_lock);
+    return fb;
+}
+
+void vk_compat_fb_stats(uint64_t *made, uint64_t *reused) {
+    *made = __atomic_exchange_n(&fb_made, 0, __ATOMIC_RELAXED);
+    *reused = __atomic_exchange_n(&fb_reused, 0, __ATOMIC_RELAXED);
+}
+
 // ---- the two commands
 
 static const VkCompatRenderingInfo *compat_info(const VkRenderingInfo *ri) {
@@ -192,13 +266,14 @@ static void rp_begin_rendering(VkCommandBuffer cb, const VkRenderingInfo *ri) {
     }
     VkDevice dev = vk_ctx()->device;
     VkRenderPass rp = pass_for(dev, &k);
-    VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = n,
-                                  .pAttachments = views, .width = ri->renderArea.offset.x + ri->renderArea.extent.width,
-                                  .height = ri->renderArea.offset.y + ri->renderArea.extent.height,
-                                  .layers = ri->layerCount ? ri->layerCount : 1};
-    VkFramebuffer fb;
-    if (vkCreateFramebuffer(dev, &fi, NULL, &fb) != VK_SUCCESS) rt_fatal("vk: vkCreateFramebuffer failed");
-    vk_defer_framebuffer(fb);
+    FbKey fk;
+    memset(&fk, 0, sizeof fk);
+    fk.rp = rp, fk.n = n;
+    memcpy(fk.v, views, sizeof *views * n);
+    fk.w = (uint32_t)ri->renderArea.offset.x + ri->renderArea.extent.width;
+    fk.h = (uint32_t)ri->renderArea.offset.y + ri->renderArea.extent.height;
+    fk.layers = ri->layerCount ? ri->layerCount : 1;
+    VkFramebuffer fb = fb_for(dev, &fk, ci->scope);
     VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
                                 .renderArea = ri->renderArea, .clearValueCount = n, .pClearValues = clear};
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);

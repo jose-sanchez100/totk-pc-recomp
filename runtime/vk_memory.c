@@ -2410,8 +2410,11 @@ static void retire(VkCtx *c, int wait_all) {
     ninflight -= k;
 }
 
+static void fbq_take(void);
+
 static void collect_locked(VkCtx *c) {
     retire(c, 0);
+    fbq_take();
     uint64_t tl = 0;
     if (c->timeline) vkGetSemaphoreCounterValue(c->device, c->timeline, &tl);
     int k = 0;
@@ -2735,8 +2738,34 @@ void vk_defer_image(VkImage img, VmaAllocation alloc) {
     if (img) defer(alloc ? DEAD_IMAGE_VMA : DEAD_IMAGE, (uint64_t)(uintptr_t)img, alloc);
 }
 void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL); }
+// The framebuffers of emulated render passes (vk_compat_rp.c fb_make) arrive on the recorder thread, in the middle of a
+// part's commands. That thread must not take cmd_lock: vk_upload_flush holds it while vk_queue_lock waits for the
+// recorder to drain its queue (gfx_present.c vk_queue_lock, vk_rec.c rec_queue_wait), and the two then wait for each
+// other for good. That froze the game with the render thread spinning in rec_queue_wait and the recorder in defer_at:
+// once in the open field at 75 fps, 62 s into the world, on a device without dynamic rendering. So a framebuffer waits
+// in a list of its own, under a lock nothing holds across another lock or a wait, and joins the deferred objects the
+// next time they are collected (fbq_take, cmd_lock held), stamped then: a later stamp only keeps it longer.
+typedef struct { VkFramebuffer fb; uint64_t after; } FbWait;
+static FbWait *fbq;
+static int nfbq, cfbq;
+static PlatMutex fbq_lock = PLAT_MUTEX_INIT;
+
 void vk_defer_framebuffer(VkFramebuffer fb, uint64_t after) {
-    if (fb) defer_at(DEAD_FRAMEBUFFER, (uint64_t)(uintptr_t)fb, NULL, after);
+    if (!fb) return;
+    plat_mutex_lock(&fbq_lock);
+    if (nfbq == cfbq) grow((void **)&fbq, &cfbq, sizeof *fbq);
+    fbq[nfbq++] = (FbWait){fb, after};
+    plat_mutex_unlock(&fbq_lock);
+}
+
+static void fbq_take(void) {   // cmd_lock held
+    plat_mutex_lock(&fbq_lock);
+    FbWait *q = fbq;
+    int n = nfbq;
+    fbq = NULL, nfbq = cfbq = 0;
+    plat_mutex_unlock(&fbq_lock);
+    for (int i = 0; i < n; i++) defer_at(DEAD_FRAMEBUFFER, (uint64_t)(uintptr_t)q[i].fb, NULL, q[i].after);
+    free(q);
 }
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc);
@@ -2815,6 +2844,7 @@ void vk_mem_shutdown(void) {
     vk_texture_shutdown();
     plat_rmutex_lock(&cmd_lock);
     retire(c, 1);
+    fbq_take();   // before the stamps are cleared below
     uint64_t keep = tl_noted;
     tl_noted = 0;
     for (int i = 0; i < ndead; i++) dead[i].seq = 0, dead[i].tl = 0;   // the device is idle
